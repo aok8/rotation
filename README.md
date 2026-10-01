@@ -47,7 +47,7 @@ npm --prefix server run dev
 npm --prefix web run dev
 ```
 
-The Vite development server proxies `/api` and `/auth` to the backend on port 3000. Spotify's callback returns to port 3000, so build the web files once before signing in; the server can then serve its callback landing page. After login, use `http://127.0.0.1:5173` for hot reload. The shell commands load `.env` for the backend and override its container data path for local use. Register `http://127.0.0.1:3000/auth/callback` in Spotify for this workflow. Run available checks with `npm --prefix server test`, `npm --prefix server run typecheck`, `npm --prefix server run build`, and `npm --prefix web run build`.
+The Vite development server proxies `/api` and `/auth` to the backend on port 3000. Spotify's callback returns to port 3000, so build the web files once before signing in; the server can then serve its callback landing page. After login, use `http://127.0.0.1:5173` for hot reload. The shell commands load `.env` for the backend and use a writable local data directory; Compose overrides `DATA_DIR` with `/app/data` inside the container. Register `http://127.0.0.1:3000/auth/callback` in Spotify for this workflow. Run available checks with `npm --prefix server test`, `npm --prefix server run typecheck`, `npm --prefix server run build`, and `npm --prefix web run build`.
 
 ## Behavior and limits
 
