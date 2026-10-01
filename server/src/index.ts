@@ -1,4 +1,4 @@
-import Fastify from "fastify";
+import Fastify, { LogController } from "fastify";
 import cookie from "@fastify/cookie";
 import staticPlugin from "@fastify/static";
 import { existsSync } from "node:fs";
@@ -9,7 +9,7 @@ import { registerAuthRoutes } from "./auth.js";
 import { registerApiRoutes } from "./routes.js";
 
 const app = Fastify({
-  disableRequestLogging: true,
+  logController: new LogController({ disableRequestLogging: true }),
   logger: {
     redact: [
       "req.headers.authorization",
