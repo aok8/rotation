@@ -59,9 +59,8 @@ export async function api<T>(
     credentials: "same-origin",
     ...options,
     headers: {
-      ...(method !== "GET"
-        ? { "Content-Type": "application/json", "X-CSRF-Token": csrfToken }
-        : {}),
+      ...(method !== "GET" ? { "X-CSRF-Token": csrfToken } : {}),
+      ...(options.body != null ? { "Content-Type": "application/json" } : {}),
       ...options.headers,
     },
   });

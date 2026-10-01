@@ -360,6 +360,36 @@ export default function App() {
       method: "PUT",
       body: JSON.stringify({ deviceId: deviceIdRef.current, uri: item.uri }),
     });
+    // The SDK can emit an interim paused state while the Connect transfer is
+    // finishing. Keep the successful command visible until its next update.
+    setPlayback((previous) =>
+      previous ? { ...previous, paused: false, position: 0 } : previous,
+    );
+    setPosition(0);
+    setPhase("playing");
+  }
+  async function togglePlayback() {
+    if (phase === "playing") {
+      await run(async () => {
+        if (!player.current) throw new Error("The Spotify player is not ready.");
+        await player.current.pause();
+        setPlayback((previous) =>
+          previous ? { ...previous, paused: true } : previous,
+        );
+        setPhase("paused");
+      });
+    } else if (
+      playback?.track_window?.current_track?.uri === current?.uri &&
+      player.current
+    ) {
+      await run(async () => {
+        await player.current!.resume();
+        setPlayback((previous) =>
+          previous ? { ...previous, paused: false } : previous,
+        );
+        setPhase("playing");
+      });
+    } else await start();
   }
   async function start() {
     await run(async () => {
@@ -828,23 +858,11 @@ export default function App() {
                           </button>
                           <button
                             className="play-button"
-                            aria-label={
-                              playback && !playback.paused ? "Pause" : "Play"
-                            }
-                            onClick={() => {
-                              if (playback && !playback.paused)
-                                void player.current?.pause();
-                              else if (
-                                playback?.paused &&
-                                playback.track_window?.current_track?.uri ===
-                                  current.uri
-                              )
-                                void player.current?.resume();
-                              else void start();
-                            }}
+                            aria-label={phase === "playing" ? "Pause" : "Play"}
+                            onClick={() => void togglePlayback()}
                             disabled={busy || phase === "premium"}
                           >
-                            {playback && !playback.paused ? "Ⅱ" : "▶"}
+                            {phase === "playing" ? "Ⅱ" : "▶"}
                           </button>
                           <button
                             aria-label="Next track"
