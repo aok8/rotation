@@ -53,7 +53,15 @@ export async function spotify(
       response.status >= 500 ? 502 : response.status,
     );
   }
-  return response.status === 204 ? {} : response.json();
+  if (response.status === 204) return {};
+  if (path.startsWith("/me/player/") && init.method === "PUT") return {};
+  if (response.headers.get("content-type")?.includes("json"))
+    return response.json();
+  throw new AppError(
+    "spotify_response",
+    "Spotify returned an unexpected response.",
+    502,
+  );
 }
 export async function refresh(s: Session) {
   const response = await fetch("https://accounts.spotify.com/api/token", {

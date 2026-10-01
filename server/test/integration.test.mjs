@@ -65,7 +65,10 @@ globalThis.fetch = async (input, init = {}) => {
       path: u.pathname,
       deviceId: u.searchParams.get("device_id"),
     });
-    return new Response(null, { status: 204 });
+    return new Response("device12345", {
+      status: 200,
+      headers: { "content-type": "text/plain" },
+    });
   }
   if (u.pathname === "/v1/me/playlists")
     return response({
