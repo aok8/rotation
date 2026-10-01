@@ -1,0 +1,13 @@
+.env
+.env.*
+!.env.example
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+data/
+**/data/
+.local-data/
+coverage/
+*.log
+.DS_Store
