@@ -32,7 +32,7 @@ Open `http://127.0.0.1:3000`. The container serves the web build and API from po
 
 For later code updates, pull or check out the desired revision and run `docker compose up --build -d` again. Plain `docker compose up` does not automatically rebuild an existing image after source edits. During development, Docker Compose 2.22 or later supports `docker compose up --watch`: the rules in `compose.yaml` rebuild and replace the service when `server/` or `web/` changes. This is a full rebuild for compiled TypeScript, not live code injection. See [Compose Watch](https://docs.docker.com/compose/how-tos/file-watch/) and [`up --build`](https://docs.docker.com/reference/cli/docker/compose/up/). Watch mode runs in the foreground and consumes resources for file monitoring; use normal detached mode for daily use.
 
-Docker is unavailable in this development environment, so the image and Compose behavior need validation on a Docker host before release.
+The image and Compose service were built and smoke tested on CachyOS on 2026-10-01. The container became healthy, served the web app and API on host loopback, and retained its named volume across a restart and a `docker compose down` / `up` cycle. A live Spotify sign-in from inside the container has not yet been tested.
 
 ## Local development
 
