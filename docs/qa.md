@@ -1,6 +1,6 @@
 # Release checks
 
-The build and type checks can run without Spotify. Live checks require the owner's Premium account, a configured Developer app, and an isolated pair of playlists so edits do not affect personal playlists. Record results before release; no live Spotify results are claimed here.
+The build and type checks can run without Spotify. Live checks require the owner's Premium account, a configured Developer app, and an isolated pair of playlists so edits do not affect personal playlists. Live checks on 2026-10-01 verified Spotify sign-in, loading a 402-item playlist, audible browser playback, advancing progress, and pause/resume controls. The remaining matrix rows are release checks, not claimed results. Changes made outside this app may not immediately appear in its player controls.
 
 ## Automated and container checks
 
