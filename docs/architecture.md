@@ -26,7 +26,7 @@ The initial scope request is `playlist-read-private playlist-read-collaborative 
 
 The brief asks for exact occurrence removal. Spotify's [current remove endpoint](https://developer.spotify.com/documentation/web-api/reference/remove-items-playlist) accepts a URI and optional snapshot ID, but its documented request has no occurrence position. The old `/tracks` route is deprecated and must not be used to regain a position selector. A snapshot protects against some stale edits; it does not identify which of two equal URIs the user selected. Therefore **Remove and skip is disabled for a URI that appears more than once in the current source playlist**. Standard next/previous still work. The server refreshes the playlist before the mutation, checks that the selected URI is unique and still present, and blocks on any ambiguity or changed snapshot. It never replaces the whole playlist. This is a deliberate limitation until Spotify offers an exact occurrence operation.
 
-For a unique URI, archive first, then remove. If archive fails, leave the source and playback untouched. If removal fails after archive succeeds, persist a partial operation record so retry only repeats removal. Do not advance until source removal succeeds. Because Spotify offers no cross-playlist transaction, a process failure between the API calls can leave a partial operation requiring recovery. Keep the operation log small and avoid full listening history.
+For a unique URI, archive first, then remove. If archive fails, leave the source and playback untouched. If removal fails after archive succeeds, persist a partial operation record so retry only repeats removal. If the archive request outcome is unknown because of a timeout or connection loss, hold an `archive_uncertain` operation and require the user to check the archive in Spotify or explicitly remove without archiving. Do not blindly repeat the add. Do not advance until source removal succeeds. Because Spotify offers no cross-playlist transaction, a process failure between the API calls can leave a partial operation requiring recovery. Keep the operation log small and avoid full listening history.
 
 ## OAuth sequence
 
@@ -71,6 +71,9 @@ sequenceDiagram
         end
         alt Archive failed
             Server-->>Browser: Keep source and playback; retry option
+        else Archive result uncertain
+            Server->>Server: Hold uncertain operation
+            Server-->>Browser: Check Spotify history; choose recovery explicitly
         else Archive succeeded or None
             Server->>Spotify: DELETE source item URI with snapshot
             alt Remove failed

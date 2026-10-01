@@ -7,6 +7,7 @@ The build and type checks can run without Spotify. Live checks require the owner
 ```sh
 npm --prefix server ci
 npm --prefix web ci
+npm --prefix server test
 npm --prefix server run typecheck
 npm --prefix web run typecheck
 npm --prefix server run build
