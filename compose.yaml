@@ -13,19 +13,6 @@ services:
     volumes:
       - rotation_data:/app/data
     restart: unless-stopped
-    develop:
-      watch:
-        - action: rebuild
-          path: ./server
-          ignore:
-            - node_modules/
-            - dist/
-            - data/
-        - action: rebuild
-          path: ./web
-          ignore:
-            - node_modules/
-            - dist/
 
 volumes:
   rotation_data:
