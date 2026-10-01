@@ -1,0 +1,31 @@
+services:
+  rotation:
+    build:
+      context: .
+    env_file:
+      - .env
+    environment:
+      PORT: 3000
+      DATA_DIR: /app/data
+      WEB_DIST_DIR: /app/web/dist
+    ports:
+      - "127.0.0.1:${PORT:-3000}:3000"
+    volumes:
+      - rotation_data:/app/data
+    restart: unless-stopped
+    develop:
+      watch:
+        - action: rebuild
+          path: ./server
+          ignore:
+            - node_modules/
+            - dist/
+            - data/
+        - action: rebuild
+          path: ./web
+          ignore:
+            - node_modules/
+            - dist/
+
+volumes:
+  rotation_data:
