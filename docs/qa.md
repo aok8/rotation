@@ -16,6 +16,8 @@ npm --prefix web run build
 
 On a machine with Docker, run `docker compose config`, `docker compose build`, `docker compose up -d`, and `docker compose ps`. Check that the service becomes healthy, `GET /health` returns only `{ "ok": true }`, and unauthenticated `/api/playlists` returns 401. Inspect the final image user and installed files; the runtime should use `node`, contain built artifacts and production dependencies, and exclude `.env`, source, and build tools. Confirm a restart retains connection/settings and `docker compose down` retains the volume.
 
+Docker smoke test on 2026-10-01 (CachyOS, Docker 29.8.2, Compose 5.5.1): `docker compose config --quiet` and `docker compose build` passed. The non-root container became healthy; `/health` and `/` returned 200, unauthenticated `/api/playlists` returned 401, and `/auth/start` returned 302. The image contained the built web and server files while excluding `.env`, source, and the TypeScript build tool. A test file in the named volume survived both `docker compose restart` and `docker compose down` / `up`. One idle sample was 0.01% CPU and 32.72 MiB memory. Live Spotify sign-in and the Compose Watch rebuild path remain untested in the container.
+
 ## Live Spotify matrix
 
 | Scenario | Expected result |
