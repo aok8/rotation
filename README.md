@@ -5,7 +5,7 @@ A small, self-hosted Spotify playlist player for listening through a shuffled so
 ## Requirements
 
 - Docker Engine with Compose plugin for the container route, or Node.js 24 for local development.
-- A Spotify Premium account and a Spotify Developer app. Live Spotify testing remains pending until a developer app is created and configured.
+- A Spotify Premium account and a Spotify Developer app. The owner's app has been configured; sign-in, a 402-item playlist load, and audible browser playback have been verified. Other live scenarios remain in the [release checklist](docs/qa.md).
 - A source playlist you can edit. The optional history playlist must be different and editable.
 
 Spotify's current Development Mode access and limits can change. Check the [Spotify migration guide](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide) and your own Developer Dashboard before setup.

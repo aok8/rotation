@@ -1,6 +1,6 @@
 # Rotation architecture and API decisions
 
-Checked against Spotify's official documentation on 2026-10-01. This is an implementation plan, not an instruction embedded in the product brief. Live Spotify verification still requires a developer app and a Premium account.
+Checked against Spotify's official documentation on 2026-10-01. This is an implementation plan, not an instruction embedded in the product brief. The owner's configured Developer app and Premium account have been used for an initial live sign-in, playlist load, and audible playback check.
 
 ## Shape
 
