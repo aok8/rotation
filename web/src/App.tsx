@@ -15,6 +15,7 @@ import {
   type PlaybackState,
   type SpotifyPlayer,
 } from "./spotify-sdk";
+import { hasLocalTrackEnded, reconcileSdkState } from "./playback-state";
 
 type Notice = { text: string; kind: "ok" | "error" | "info" } | null;
 type Phase =
@@ -117,6 +118,7 @@ export default function App() {
   const [playerMessage, setPlayerMessage] = useState("");
   const [deviceId, setDeviceId] = useState("");
   const [playback, setPlayback] = useState<PlaybackState | null>(null);
+  const [playingIntent, setPlayingIntent] = useState(false);
   const [position, setPosition] = useState(0);
   const [seekValue, setSeekValue] = useState<number | null>(null);
   const [confirm, setConfirm] = useState(false);
@@ -130,15 +132,25 @@ export default function App() {
   } | null>(null);
   const player = useRef<SpotifyPlayer | null>(null);
   const deviceIdRef = useRef("");
+  const playingIntentRef = useRef(false);
+  const desiredUriRef = useRef("");
   const command = useRef(false);
   const rotationRef = useRef<Rotation | null>(null);
+  const positionRef = useRef(0);
   const ended = useRef(false);
+  function setIntent(playing: boolean) {
+    playingIntentRef.current = playing;
+    setPlayingIntent(playing);
+  }
   useEffect(() => {
     rotationRef.current = rotation;
   }, [rotation]);
   useEffect(() => {
     deviceIdRef.current = deviceId;
   }, [deviceId]);
+  useEffect(() => {
+    positionRef.current = position;
+  }, [position]);
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     document
@@ -202,6 +214,7 @@ export default function App() {
       );
       setPlayback(null);
       setPosition(0);
+      setIntent(false);
     } catch (e) {
       setRotationError(describeError(e));
     } finally {
@@ -232,6 +245,7 @@ export default function App() {
             void api<{ accessToken: string }>("/api/token")
               .then((data) => callback(data.accessToken))
               .catch((e) => {
+                setIntent(false);
                 setPhase("error");
                 setPlayerMessage(describeError(e));
               });
@@ -242,12 +256,13 @@ export default function App() {
           "ready",
           ({ device_id }: { device_id: string }) => {
             setDeviceId(device_id);
-            setPhase("ready");
+            if (!playingIntentRef.current) setPhase("ready");
             setPlayerMessage("");
           },
         );
         instance.addListener("not_ready", () => {
           setDeviceId("");
+          setIntent(false);
           setPhase("connecting");
           setPlayerMessage("The player disconnected. Try reconnecting.");
         });
@@ -255,25 +270,36 @@ export default function App() {
           "player_state_changed",
           (state: PlaybackState | null) => {
             if (!state) return;
-            setPlayback(state);
-            setPosition(state.position);
-            setPhase(state.paused ? "paused" : "playing");
-            const atEnd =
-              state.paused &&
-              state.duration > 0 &&
-              state.position >= state.duration - 750;
+            const active = rotationRef.current;
+            const currentKey = active?.order[active.currentIndex];
+            const currentItem = active?.items.find(
+              (item) => item.key === currentKey,
+            );
+            const next = reconcileSdkState(state, {
+              desiredUri: desiredUriRef.current,
+              playingIntent: playingIntentRef.current,
+              position: positionRef.current,
+              expectedDuration: currentItem?.durationMs ?? 0,
+            });
+            if (!next) return;
+            setPlayback(next.playback);
+            setPosition(next.position);
+            positionRef.current = next.position;
+            if (next.phase) setPhase(next.phase);
             if (
-              atEnd &&
+              next.ended &&
               !ended.current &&
               rotationRef.current &&
               !command.current
             ) {
               ended.current = true;
+              setIntent(false);
               void navigate("next", true);
-            } else if (!atEnd) ended.current = false;
+            } else if (!next.ended) ended.current = false;
           },
         );
         instance.addListener("account_error", () => {
+          setIntent(false);
           setPhase("premium");
           setPlayerMessage(
             "Spotify Premium is required for browser playback. Your playlist settings remain available.",
@@ -285,6 +311,7 @@ export default function App() {
           "playback_error",
         ])
           instance.addListener(event, ({ message }: { message: string }) => {
+            setIntent(false);
             setPhase("error");
             setPlayerMessage(
               message || "Spotify playback is unavailable. Try reconnecting.",
@@ -293,6 +320,7 @@ export default function App() {
         setPhase("connecting");
         void instance.connect().then((ok) => {
           if (!ok && !cancelled) {
+            setIntent(false);
             setPhase("error");
             setPlayerMessage("The Spotify browser player could not connect.");
           }
@@ -300,6 +328,7 @@ export default function App() {
       })
       .catch((e) => {
         if (!cancelled) {
+          setIntent(false);
           setPhase("error");
           setPlayerMessage(describeError(e));
         }
@@ -313,13 +342,13 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.authenticated]);
   useEffect(() => {
-    if (!playback || playback.paused) return;
+    if (!playingIntent || !playback) return;
     const id = setInterval(
       () => setPosition((value) => Math.min(playback.duration, value + 250)),
       250,
     );
     return () => clearInterval(id);
-  }, [playback]);
+  }, [playingIntent, playback?.duration]);
   const ordered = useMemo(() => {
     if (!rotation) return [];
     const byKey = new Map(rotation.items.map((item) => [item.key, item]));
@@ -356,23 +385,41 @@ export default function App() {
   async function play(item: TrackItem) {
     if (!deviceIdRef.current)
       throw new Error("The browser player is connecting. Try again shortly.");
-    await api("/api/playback", {
-      method: "PUT",
-      body: JSON.stringify({ deviceId: deviceIdRef.current, uri: item.uri }),
+    const previousUri = desiredUriRef.current;
+    desiredUriRef.current = item.uri;
+    try {
+      await api("/api/playback", {
+        method: "PUT",
+        body: JSON.stringify({ deviceId: deviceIdRef.current, uri: item.uri }),
+      });
+    } catch (error) {
+      desiredUriRef.current = previousUri;
+      throw error;
+    }
+    setIntent(true);
+    ended.current = false;
+    setPlayback({
+      paused: false,
+      position: 0,
+      duration: item.durationMs ?? 0,
+      track_window: { current_track: { uri: item.uri } },
     });
-    // The SDK can emit an interim paused state while the Connect transfer is
-    // finishing. Keep the successful command visible until its next update.
-    setPlayback((previous) =>
-      previous ? { ...previous, paused: false, position: 0 } : previous,
-    );
     setPosition(0);
     setPhase("playing");
   }
   async function togglePlayback() {
-    if (phase === "playing") {
+    if (playingIntent) {
       await run(async () => {
-        if (!player.current) throw new Error("The Spotify player is not ready.");
-        await player.current.pause();
+        if (!deviceIdRef.current)
+          throw new Error("The Spotify player is not ready.");
+        await api("/api/playback/control", {
+          method: "PUT",
+          body: JSON.stringify({
+            deviceId: deviceIdRef.current,
+            action: "pause",
+          }),
+        });
+        setIntent(false);
         setPlayback((previous) =>
           previous ? { ...previous, paused: true } : previous,
         );
@@ -380,10 +427,18 @@ export default function App() {
       });
     } else if (
       playback?.track_window?.current_track?.uri === current?.uri &&
-      player.current
+      deviceIdRef.current
     ) {
       await run(async () => {
-        await player.current!.resume();
+        await api("/api/playback/control", {
+          method: "PUT",
+          body: JSON.stringify({
+            deviceId: deviceIdRef.current,
+            action: "resume",
+          }),
+        });
+        desiredUriRef.current = current!.uri;
+        setIntent(true);
         setPlayback((previous) =>
           previous ? { ...previous, paused: false } : previous,
         );
@@ -422,6 +477,7 @@ export default function App() {
       );
       if (item) await play(item);
       else if (automatic) {
+        setIntent(false);
         setNotice({
           text: "You reached the end of this rotation. Start again for a fresh order.",
           kind: "info",
@@ -540,6 +596,17 @@ export default function App() {
   }
   const duration = playback?.duration || current?.durationMs || 0;
   const progress = seekValue ?? position;
+  useEffect(() => {
+    if (
+      !hasLocalTrackEnded(playingIntent, !!current, position, duration) ||
+      ended.current ||
+      command.current
+    )
+      return;
+    ended.current = true;
+    setIntent(false);
+    void navigate("next", true);
+  }, [playingIntent, current, duration, position]);
   return (
     <div className="app">
       <header className="header wrap">
@@ -858,11 +925,11 @@ export default function App() {
                           </button>
                           <button
                             className="play-button"
-                            aria-label={phase === "playing" ? "Pause" : "Play"}
+                            aria-label={playingIntent ? "Pause" : "Play"}
                             onClick={() => void togglePlayback()}
                             disabled={busy || phase === "premium"}
                           >
-                            {phase === "playing" ? "Ⅱ" : "▶"}
+                            {playingIntent ? "Ⅱ" : "▶"}
                           </button>
                           <button
                             aria-label="Next track"
