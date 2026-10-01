@@ -27,6 +27,7 @@ let archiveTimeout = false;
 let deletes = 0;
 let snapshot = "snap-1";
 let otherTracks = null;
+const playbackCommands = [];
 const track = {
   type: "track",
   uri: "spotify:track:abc123",
@@ -55,6 +56,17 @@ globalThis.fetch = async (input, init = {}) => {
   const u = new URL(url);
   if (u.pathname === "/v1/me")
     return response({ id: "user", display_name: "Listener" });
+  if (
+    (u.pathname === "/v1/me/player/pause" ||
+      u.pathname === "/v1/me/player/play") &&
+    init.method === "PUT"
+  ) {
+    playbackCommands.push({
+      path: u.pathname,
+      deviceId: u.searchParams.get("device_id"),
+    });
+    return new Response(null, { status: 204 });
+  }
   if (u.pathname === "/v1/me/playlists")
     return response({
       items: [
@@ -163,6 +175,48 @@ try {
     );
     assert.equal(blocked.status, 403);
     assert.equal(blocked.body.error.code, "csrf");
+    const unauthenticatedControl = await request(
+      "/api/playback/control",
+      "PUT",
+      { deviceId: "device12345", action: "pause" },
+    );
+    assert.equal(unauthenticatedControl.status, 401);
+    const noCsrfControl = await request(
+      "/api/playback/control",
+      "PUT",
+      { deviceId: "device12345", action: "pause" },
+      undefined,
+      cookie,
+    );
+    assert.equal(noCsrfControl.status, 403);
+    const invalidControl = await request(
+      "/api/playback/control",
+      "PUT",
+      { deviceId: "device12345", action: "stop" },
+      csrf,
+      cookie,
+    );
+    assert.equal(invalidControl.status, 400);
+    const paused = await request(
+      "/api/playback/control",
+      "PUT",
+      { deviceId: "device12345", action: "pause" },
+      csrf,
+      cookie,
+    );
+    const resumed = await request(
+      "/api/playback/control",
+      "PUT",
+      { deviceId: "device12345", action: "resume" },
+      csrf,
+      cookie,
+    );
+    assert.deepEqual(paused.body, { ok: true });
+    assert.deepEqual(resumed.body, { ok: true });
+    assert.deepEqual(playbackCommands, [
+      { path: "/v1/me/player/pause", deviceId: "device12345" },
+      { path: "/v1/me/player/play", deviceId: "device12345" },
+    ]);
     const settings = await request(
       "/api/settings",
       "PUT",

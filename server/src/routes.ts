@@ -258,6 +258,27 @@ export function registerApiRoutes(app: FastifyInstance) {
     if (s.tokens.expiresAt < Date.now() + 60_000) await refresh(s);
     return { accessToken: s.tokens.access };
   });
+  app.put("/api/playback/control", async (req) => {
+    const s = requireSession(req);
+    requireCsrf(req, s);
+    const b = object(req.body);
+    if (
+      typeof b.deviceId !== "string" ||
+      !idPattern.test(b.deviceId) ||
+      (b.action !== "pause" && b.action !== "resume")
+    )
+      throw new AppError(
+        "invalid_playback",
+        "Choose pause or resume for a connected player.",
+      );
+    const command = b.action === "pause" ? "pause" : "play";
+    await spotify(
+      s,
+      `/me/player/${command}?device_id=${encodeURIComponent(b.deviceId)}`,
+      { method: "PUT" },
+    );
+    return { ok: true };
+  });
   app.put("/api/playback", async (req) => {
     const s = requireSession(req);
     requireCsrf(req, s);
