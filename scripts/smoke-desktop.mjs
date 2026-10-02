@@ -18,6 +18,13 @@ if (!(await stat(runtime).catch(() => null))?.isFile()) {
   console.error("The staged bundle is missing its Node runtime.");
   process.exit(2);
 }
+const launcher = process.platform === "darwin"
+  ? join(stagingRoot, "Contents", "MacOS", "Rotation")
+  : join(appRoot, process.platform === "win32" ? "Launch Rotation.cmd" : "Launch Rotation.sh");
+if (!(await stat(launcher).catch(() => null))?.isFile()) {
+  console.error("The staged bundle is missing its launcher.");
+  process.exit(2);
+}
 
 const temp = await mkdtemp(join(tmpdir(), "rotation-desktop-smoke-"));
 const configDir = join(temp, "config");
@@ -32,16 +39,16 @@ await writeFile(
   }),
 );
 
-const child = spawn(
-  runtime,
-  [
-    join(appRoot, "desktop", "launcher.mjs"),
+const launchArgs = [
     "--no-open",
     "--port", "0",
     "--config-dir", configDir,
     "--data-dir", dataDir,
     "--app-root", appRoot,
-  ],
+  ];
+const child = spawn(
+  process.platform === "win32" ? "cmd.exe" : launcher,
+  process.platform === "win32" ? ["/d", "/c", launcher, ...launchArgs] : launchArgs,
   { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ROTATION_NODE_BIN: runtime } },
 );
 let output = "";
