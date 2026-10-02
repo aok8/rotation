@@ -1,32 +1,35 @@
-# Desktop packages
+# Install rotation on your computer
 
-The desktop edition runs the same small Node server on `127.0.0.1:3000` and opens your default browser. It does not embed a browser or keep a background service after you choose **Quit rotation**. The browser needs internet access to Spotify, including its Web Playback SDK, and Spotify Premium for in-browser playback.
+rotation starts a small local server and opens your default browser. It does not install an always-running service. The browser needs internet access to Spotify, and Spotify Premium is required for music playback.
 
-## Install and launch
+## Before first launch
 
-1. Open a successful **Desktop packages** run in the repository's GitHub Actions tab and download the artifact for your operating system and CPU. GitHub downloads an outer ZIP containing `rotation-<platform>.zip` or `rotation-<platform>.tar.gz`; extract the outer ZIP and then the inner archive into a folder you will keep. Pull request artifacts are test builds and expire after 30 days.
-2. Add **`http://127.0.0.1:3000/auth/callback`** as an exact redirect URI in your Spotify Developer Dashboard app.
-3. Launch the app:
-   - **Windows x64:** double-click `Launch Rotation.vbs` for a hidden console. If Windows Script Host is disabled, use `Launch Rotation.cmd`; keep its console open while listening.
-   - **macOS Apple Silicon or Intel:** move `Rotation.app` to Applications and open it. These community builds are unsigned and unnotarized, so macOS may block downloaded copies. A signed and notarized release is needed for a normal first-launch experience. The app opens your default browser when allowed to run.
-   - **Linux x64 or arm64:** run `./Launch Rotation.sh`. Optionally run `./Install Desktop Shortcut.sh` once to add an application menu entry. It points to the extracted folder, so keep that folder in place.
-4. The first-run page asks for your Spotify Client ID and Client Secret. They are saved in your OS user profile, outside the app folder. Continue to Spotify sign-in in the browser.
+In your Spotify Developer Dashboard app, register **`http://127.0.0.1:3000/auth/callback`** as the exact redirect URI. Keep that address and port unchanged. The package contains no Spotify credentials; you enter your app's Client ID and Client Secret on rotation's local first-run page.
 
-Use **Quit rotation** in the app to stop the local server. Closing the browser tab alone leaves it running; reopen `http://127.0.0.1:3000` to access Quit. Opening a second copy while one is already running may report that port 3000 is in use; use the existing browser tab instead. No service is installed to start at boot.
+Open a successful **Desktop packages** run in the repository's GitHub Actions tab and download the artifact for your operating system and CPU. GitHub provides an outer ZIP containing the named archive below. Extract the outer ZIP, then extract the inner archive into a folder you will keep. Pull request artifacts are test builds and expire after 30 days.
 
-The first-run setup uses port 3000 because the registered Spotify redirect URI must match exactly. Advanced `--port` overrides need a matching Dashboard redirect URI. User settings and session data persist between launches in a per-user config/data directory; replacing the app folder does not erase them. To fully disconnect, use the app's **Disconnect Spotify** action before deleting local profile data. Back up the profile data only if you want to preserve that connection; it contains secrets and should remain private.
+| System | Inner archive | Launch |
+| --- | --- | --- |
+| Arch Linux x64 | `rotation-linux-x64.tar.gz` | Run `./Launch Rotation.sh` from the extracted `Rotation` folder. |
+| Arch Linux arm64 | `rotation-linux-arm64.tar.gz` | Run `./Launch Rotation.sh` from the extracted `Rotation` folder. |
+| Windows x64 | `rotation-windows-x64.zip` | Double-click `Launch Rotation.vbs`. If Windows Script Host is unavailable, run `Launch Rotation.cmd` and keep its console open. |
+| macOS Apple Silicon | `rotation-macos-arm64.zip` | Move `Rotation.app` to Applications and open it. |
+| macOS Intel | `rotation-macos-x64.zip` | Move `Rotation.app` to Applications and open it. |
 
-## Build from source
+The Linux packages target **Arch Linux** on x64 and arm64. Other distributions are **best effort** because their libraries and desktop integration can differ. On Arch Linux, you can run `./Install Desktop Shortcut.sh` once to add an application menu entry. Keep the extracted folder in place because the shortcut points to it. The macOS packages are unsigned and unnotarized, so macOS may block downloaded copies; a signed release is needed for a normal first launch.
 
-Requires Node 24, npm, and the compiled `desktop/launcher.mjs` runtime. Build with:
+On first launch, rotation shows its local setup page. Enter your Spotify Client ID and Client Secret, then continue to Spotify sign-in. The app binds to `127.0.0.1`, so it is available only on that computer.
 
-```sh
-npm --prefix web ci
-npm --prefix server ci
-npm --prefix web run build
-npm --prefix server run build
-npm --prefix server prune --omit=dev
-node desktop/package.mjs --platform=linux --arch=x64 --node="$(command -v node)" --out=dist-desktop/Rotation
-```
+## Launch, quit, and update
 
-The packager stages an allowlist: compiled server and web output, production server dependencies, launcher, and a Node binary. It refuses `.env`, known session/config files, logs, and symlinks. CI builds archives separately on native Linux, macOS, and Windows runners. Only the Linux package can be smoke tested on a Linux development machine; Windows and macOS behavior needs testing on those operating systems. The macOS artifacts are unsigned and notarization is not configured.
+Launch rotation when you want to listen. Use **Quit rotation** in the browser to stop it, whether or not you are signed in. Closing the tab alone leaves the local server running; reopen `http://127.0.0.1:3000` to reach Quit. Launching rotation again while it is already running opens the existing local app. No service starts at boot.
+
+For an update, quit rotation, replace the extracted folder or `Rotation.app` with the newer package, and launch it again. Your credentials and listening settings stay in your user profile. Use **Disconnect Spotify** in the app to remove its stored connection before deleting local data.
+
+| System | Configuration | Session and settings data |
+| --- | --- | --- |
+| Linux | `~/.config/rotation` (or `$XDG_CONFIG_HOME/rotation`) | `~/.local/share/rotation` (or `$XDG_DATA_HOME/rotation`) |
+| Windows | `%APPDATA%\Rotation` | `%LOCALAPPDATA%\Rotation\data` |
+| macOS | `~/Library/Application Support/Rotation` | `~/Library/Application Support/Rotation/data` |
+
+Back up configuration and data together if you want to preserve your connection. They contain secrets; keep backups private. Losing the session secret in configuration makes encrypted session data unreadable. A different launch port needs a matching Spotify redirect URI; the packaged launchers use port 3000 by default.
