@@ -1,0 +1,87 @@
+name: Desktop packages
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/desktop-packages.yml'
+      - 'desktop/**'
+      - 'server/**'
+      - 'web/**'
+      - 'scripts/**'
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            name: linux-x64
+            platform: linux
+            arch: x64
+          - runner: ubuntu-24.04-arm
+            name: linux-arm64
+            platform: linux
+            arch: arm64
+          - runner: windows-2022
+            name: windows-x64
+            platform: win32
+            arch: x64
+          - runner: macos-15
+            name: macos-arm64
+            platform: darwin
+            arch: arm64
+          - runner: macos-15-intel
+            name: macos-x64
+            platform: darwin
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install dependencies
+        run: |
+          npm --prefix server ci
+          npm --prefix web ci
+      - name: Test and build
+        run: |
+          npm --prefix server test
+          npm --prefix web test
+          npm --prefix web run build
+          node --test desktop/test/*.test.mjs
+      - name: Keep only production server dependencies
+        run: npm --prefix server prune --omit=dev
+      - name: Stage portable package
+        run: node desktop/package.mjs --platform=${{ matrix.platform }} --arch=${{ matrix.arch }} --out=dist-desktop/${{ matrix.platform == 'darwin' && 'Rotation.app' || 'Rotation' }}
+      - name: Check staged payload
+        run: node scripts/check-desktop-payload.mjs dist-desktop/${{ matrix.platform == 'darwin' && 'Rotation.app' || 'Rotation' }}
+      - name: Smoke test packaged runtime
+        run: node scripts/smoke-desktop.mjs dist-desktop/${{ matrix.platform == 'darwin' && 'Rotation.app' || 'Rotation' }}
+      - name: Archive Linux package
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: tar -czf "$RUNNER_TEMP/rotation-${{ matrix.name }}.tar.gz" -C dist-desktop Rotation
+      - name: Archive macOS package
+        if: matrix.platform == 'darwin'
+        shell: bash
+        run: ditto -c -k --sequesterRsrc --keepParent dist-desktop/Rotation.app "$RUNNER_TEMP/rotation-${{ matrix.name }}.zip"
+      - name: Archive Windows package
+        if: matrix.platform == 'win32'
+        shell: pwsh
+        run: Compress-Archive -Path dist-desktop/Rotation -DestinationPath "$env:RUNNER_TEMP/rotation-${{ matrix.name }}.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rotation-${{ matrix.name }}
+          path: ${{ runner.temp }}/rotation-${{ matrix.name }}.*
+          if-no-files-found: error
+          retention-days: 30

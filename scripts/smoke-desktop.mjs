@@ -1,13 +1,28 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
-const appRoot = process.argv[2] && resolve(process.argv[2]);
-if (!appRoot) {
+const stagingRoot = process.argv[2] && resolve(process.argv[2]);
+if (!stagingRoot) {
   console.error("Usage: node scripts/smoke-desktop.mjs <built-app-root>");
+  process.exit(2);
+}
+const appRoot = process.platform === "darwin" && stagingRoot.endsWith(".app")
+  ? join(stagingRoot, "Contents", "Resources", "Rotation")
+  : stagingRoot;
+const runtime = join(appRoot, "runtime", process.platform === "win32" ? "node.exe" : "node");
+if (!(await stat(runtime).catch(() => null))?.isFile()) {
+  console.error("The staged bundle is missing its Node runtime.");
+  process.exit(2);
+}
+const launcher = process.platform === "darwin"
+  ? join(stagingRoot, "Contents", "MacOS", "Rotation")
+  : join(appRoot, process.platform === "win32" ? "Launch Rotation.cmd" : "Launch Rotation.sh");
+if (!(await stat(launcher).catch(() => null))?.isFile()) {
+  console.error("The staged bundle is missing its launcher.");
   process.exit(2);
 }
 
@@ -24,17 +39,17 @@ await writeFile(
   }),
 );
 
-const child = spawn(
-  process.execPath,
-  [
-    join(appRoot, "desktop", "launcher.mjs"),
+const launchArgs = [
     "--no-open",
     "--port", "0",
     "--config-dir", configDir,
     "--data-dir", dataDir,
     "--app-root", appRoot,
-  ],
-  { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ROTATION_NODE_BIN: process.execPath } },
+  ];
+const child = spawn(
+  process.platform === "win32" ? "cmd.exe" : launcher,
+  process.platform === "win32" ? ["/d", "/c", launcher, ...launchArgs] : launchArgs,
+  { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ROTATION_NODE_BIN: runtime } },
 );
 let output = "";
 child.stdout.on("data", (chunk) => { output += chunk.toString(); });

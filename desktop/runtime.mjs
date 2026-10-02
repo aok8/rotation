@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile, chmod } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { homedir, platform } from "node:os";
-import { join, resolve } from "node:path";
+import { join, posix, resolve, win32 } from "node:path";
 
 export const LOOPBACK = "127.0.0.1";
 
@@ -15,25 +15,25 @@ export function userPaths({
 } = {}) {
   if (os === "win32") {
     return {
-      configDir: join(
-        env.APPDATA || join(home, "AppData", "Roaming"),
+      configDir: win32.join(
+        env.APPDATA || win32.join(home, "AppData", "Roaming"),
         "Rotation",
       ),
-      dataDir: join(
-        env.LOCALAPPDATA || join(home, "AppData", "Local"),
+      dataDir: win32.join(
+        env.LOCALAPPDATA || win32.join(home, "AppData", "Local"),
         "Rotation",
         "data",
       ),
     };
   }
   if (os === "darwin") {
-    const base = join(home, "Library", "Application Support", "Rotation");
-    return { configDir: base, dataDir: join(base, "data") };
+    const base = posix.join(home, "Library", "Application Support", "Rotation");
+    return { configDir: base, dataDir: posix.join(base, "data") };
   }
   return {
-    configDir: join(env.XDG_CONFIG_HOME || join(home, ".config"), "rotation"),
-    dataDir: join(
-      env.XDG_DATA_HOME || join(home, ".local", "share"),
+    configDir: posix.join(env.XDG_CONFIG_HOME || posix.join(home, ".config"), "rotation"),
+    dataDir: posix.join(
+      env.XDG_DATA_HOME || posix.join(home, ".local", "share"),
       "rotation",
     ),
   };

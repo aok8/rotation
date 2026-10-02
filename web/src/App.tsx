@@ -612,11 +612,18 @@ export default function App() {
     await run(async () => {
       await api("/auth/logout", { method: "POST" });
       player.current?.disconnect();
-      setSession({ authenticated: false });
       setRotation(null);
       setPlaylists([]);
       setCsrfToken();
+      if (session?.desktop) await loadSession();
+      else setSession({ authenticated: false });
       setNotice({ text: "Disconnected from Spotify.", kind: "info" });
+    });
+  }
+  async function quitDesktop() {
+    await run(async () => {
+      await api("/api/desktop/quit", { method: "POST" });
+      setNotice({ text: "rotation is closing. You can close this tab.", kind: "info" });
     });
   }
   const duration = playback?.duration || current?.durationMs || 0;
@@ -661,6 +668,16 @@ export default function App() {
             <span aria-hidden="true">{theme === "light" ? "☾" : "☀"}</span>
             {theme === "light" ? "Dark" : "Light"}
           </button>
+          {session?.desktop && (
+            <button
+              className="quit-button"
+              onClick={() => void quitDesktop()}
+              disabled={busy}
+              title="Stop rotation on this computer"
+            >
+              Quit
+            </button>
+          )}
         </div>
       </header>
       {notice && (
