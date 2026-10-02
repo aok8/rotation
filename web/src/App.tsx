@@ -460,6 +460,29 @@ export default function App() {
       if (item) await play(item);
     });
   }
+  async function pauseAtEnd() {
+    if (deviceIdRef.current) {
+      try {
+        await api("/api/playback/control", {
+          method: "PUT",
+          body: JSON.stringify({
+            deviceId: deviceIdRef.current,
+            action: "pause",
+          }),
+        });
+      } catch (error) {
+        if (!player.current) throw error;
+        await player.current.pause();
+      }
+    } else {
+      await player.current?.pause();
+    }
+    setIntent(false);
+    setPlayback((previous) =>
+      previous ? { ...previous, paused: true } : previous,
+    );
+    setPhase("paused");
+  }
   async function navigate(direction: "next" | "previous", automatic = false) {
     await run(async () => {
       if (direction === "previous" && position > 3000 && player.current) {
@@ -476,13 +499,13 @@ export default function App() {
         (entry) => entry.key === updated.order[updated.currentIndex],
       );
       if (item) await play(item);
-      else if (automatic) {
-        setIntent(false);
-        setNotice({
-          text: "You reached the end of this rotation. Start again for a fresh order.",
-          kind: "info",
-        });
-        await player.current?.pause();
+      else {
+        await pauseAtEnd();
+        if (automatic)
+          setNotice({
+            text: "You reached the end of this rotation. Start again for a fresh order.",
+            kind: "info",
+          });
       }
     });
   }
@@ -491,6 +514,7 @@ export default function App() {
     const key = current.key;
     setConfirm(false);
     await run(async () => {
+      let updated: Rotation;
       try {
         const response = await api<
           Rotation | { rotation: Rotation; operationId: string }
@@ -501,21 +525,7 @@ export default function App() {
             removeWithoutArchive: withoutArchive,
           }),
         });
-        const updated = resultRotation(response);
-        setRotation(updated);
-        setFailure(null);
-        setNotice({
-          text:
-            hasArchive && !withoutArchive
-              ? "Removed from Rotation and added to history."
-              : "Removed from Rotation.",
-          kind: "ok",
-        });
-        const next = updated.items.find(
-          (item) => item.key === updated.order[updated.currentIndex],
-        );
-        if (next && canPlay) await play(next);
-        else await player.current?.pause();
+        updated = resultRotation(response);
       } catch (e) {
         const error = e as ApiError;
         setFailure({
@@ -529,6 +539,20 @@ export default function App() {
         });
         throw e;
       }
+      setRotation(updated);
+      setFailure(null);
+      setNotice({
+        text:
+          hasArchive && !withoutArchive
+            ? "Removed from Rotation and added to history."
+            : "Removed from Rotation.",
+        kind: "ok",
+      });
+      const next = updated.items.find(
+        (item) => item.key === updated.order[updated.currentIndex],
+      );
+      if (next && canPlay) await play(next);
+      else await pauseAtEnd();
     });
   }
   async function retry() {
@@ -549,6 +573,7 @@ export default function App() {
         (item) => item.key === updated.order[updated.currentIndex],
       );
       if (next && canPlay) await play(next);
+      else await pauseAtEnd();
     });
   }
   function askRemove() {
