@@ -3,7 +3,7 @@ import cookie from "@fastify/cookie";
 import staticPlugin from "@fastify/static";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { env, port } from "./config.js";
+import { env, host, port } from "./config.js";
 import { AppError } from "./errors.js";
 import { registerAuthRoutes } from "./auth.js";
 import { registerApiRoutes } from "./routes.js";
@@ -80,5 +80,20 @@ if (existsSync(webDist)) {
     return reply.sendFile("index.html");
   });
 }
-await app.listen({ host: "0.0.0.0", port });
+await app.listen({ host, port });
+process.on("message", (message) => {
+  if (
+    typeof message === "object" &&
+    message !== null &&
+    "type" in message &&
+    message.type === "shutdown"
+  ) {
+    void app.close().then(() => process.exit(0));
+  }
+});
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.on(signal, () => {
+    void app.close().then(() => process.exit(0));
+  });
+}
 export { app };

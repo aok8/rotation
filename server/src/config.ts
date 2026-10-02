@@ -9,6 +9,11 @@ export const appBaseUrl = env.APP_BASE_URL || "http://127.0.0.1:3000";
 export const sessionSecret = env.SESSION_SECRET || "";
 export const dataDir = resolve(env.DATA_DIR || "./data");
 export const port = Number(env.PORT || 3000);
+export const host = env.HOST || "0.0.0.0";
+export const desktopMode = env.DESKTOP_MODE === "1";
+export const desktopControlToken = env.DESKTOP_CONTROL_TOKEN || "";
+if (desktopMode && (host !== "127.0.0.1" || desktopControlToken.length < 32))
+  throw new Error("Desktop mode requires loopback HOST and control token");
 if (sessionSecret.length < 32)
   throw new Error("SESSION_SECRET must contain at least 32 characters");
 if (!clientId || !clientSecret || !redirectUri)
