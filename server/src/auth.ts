@@ -104,9 +104,17 @@ export function registerAuthRoutes(app: FastifyInstance) {
           expiresAt: Date.now() + t.expires_in * 1000,
         },
         operations: [],
+        grantedScopes:
+          typeof t.scope === "string" ? t.scope.split(" ") : scopes.split(" "),
       };
       const me = await spotify(s, "/me");
       s.user = { id: me.id, name: me.display_name || me.id };
+      const old = store.session;
+      if (old?.user.id === s.user.id) {
+        s.settings = old.settings;
+        s.rotation = old.rotation;
+        s.operations = old.operations;
+      }
       store.session = s;
       save();
       reply.setCookie("rotation_session", `${s.id}.${sign(s.id)}`, {

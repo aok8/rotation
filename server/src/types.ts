@@ -45,6 +45,7 @@ export interface Session {
   settings?: { sourceId: string; archiveId: string | null };
   rotation?: Rotation;
   operations: Operation[];
+  grantedScopes?: string[];
 }
 export interface Store {
   session?: Session;

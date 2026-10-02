@@ -30,7 +30,7 @@ For each staged release payload on its native operating system, run `node script
 | Uninstall/remove bundle leaves or removes user data as documented | Pending | Pending | Pending |
 | Artifact inspection finds no credentials, `.env`, or token store | Pending | Pending | Pending |
 
-Use a disposable Spotify Developer app and playlists for destructive live checks. Verify browser playback separately: a successful playback command alone does not prove audio, button state, or progress are synchronized. Test pause, resume, end of track, last-item removal, device disconnect, and closing the browser while the launcher remains open.
+Use a disposable Spotify Developer app and playlists for destructive live checks. Verify audio on the selected Spotify device: a successful playback command alone does not prove audio, button state, or progress are synchronized. Test device selection and refresh, pause, resume, seek, end of track, last-item removal, device disconnect, and closing the browser while the launcher remains open.
 
 ## Verification recorded so far
 
@@ -38,4 +38,4 @@ On 2026-10-01, the server's desktop Quit API test and the launcher unit tests pa
 
 ## Platform limits to state in release notes
 
-The Spotify Web Playback SDK runs in a supported browser and requires Premium. A plain Node launcher opens the browser; it does not provide a native media window, system tray, or OS-level playback controls. Some platforms may warn before running an unsigned downloaded executable; never tell users to bypass a security warning. Code signing, notarization, and installer formats are separate release work. The first public build should label exactly which OS and CPU architectures were built and manually smoke tested.
+Spotify plays audio on the selected Spotify app or Connect device; Rotation's browser page only shows controls and playlist actions. Playback control requires Premium. The launcher does not provide a native media window, system tray, or OS-level playback controls. Some platforms may warn before running an unsigned downloaded executable; never tell users to bypass a security warning. Code signing, notarization, and installer formats are separate release work. The first public build should label exactly which OS and CPU architectures were built and manually smoke tested.

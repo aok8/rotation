@@ -1,6 +1,6 @@
 # rotation desktop
 
-rotation runs locally on your computer and opens in your default browser. It does not install a background service or a separate music player window. Spotify provides the music, and Spotify Premium is required for browser playback.
+rotation runs locally on your computer and opens its controls in your default browser. It does not install a background service or play audio in that browser. Choose an available Spotify app or Connect device for music; Spotify Premium is required for playback control.
 
 Get the package for your operating system from a successful **Desktop packages** run in the repository's GitHub Actions tab, then follow [the installation guide](INSTALL.md). The Linux packages target **Arch Linux** on x64 and arm64; other distributions are best effort. Windows x64 and macOS Apple Silicon and Intel packages are also available.
 

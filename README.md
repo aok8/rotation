@@ -1,6 +1,6 @@
 # rotation
 
-Rotation is a local Spotify playlist player. It shuffles a source playlist and lets you clear tracks as you listen. Optionally choose a history playlist: **Remove and skip** adds the current track to history before removing it from the source. Spotify Premium is required for browser playback.
+Rotation is a local Spotify playlist curator and remote control. It shuffles a source playlist and lets you clear tracks as you listen on a Spotify device you choose. Optionally choose a history playlist: **Remove and skip** adds the current track to history before removing it from the source. Spotify Premium is required for playback control.
 
 ## Get the desktop app
 
@@ -12,7 +12,9 @@ Rotation runs on your computer while you use it. The launcher starts a small ser
 
 See [desktop installation instructions](desktop/INSTALL.md) for Windows, macOS, and **Arch Linux**. Arch Linux is the required Linux target. Other Linux distributions may work with the portable package but are not part of the supported install target. The packages include Node.js; users do not need to install it. GitHub Actions artifacts are test builds, not signed releases.
 
-A Spotify Premium account, a Developer app, and a source playlist you can edit are required. The optional history playlist must be different from the source and editable. Spotify Development Mode access and limits can change; check the [Spotify migration guide](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide) and your Dashboard.
+If you connected an older browser-player version, choose **Reconnect Spotify** once after updating. Rotation now needs permission to read your available playback devices and current playback state. Reconnecting the same Spotify account keeps the saved playlist choices.
+
+A Spotify Premium account, a Developer app, an available Spotify Connect device, and a source playlist you can edit are required. Open Spotify on a computer, phone, or speaker, then choose that device in Rotation. The optional history playlist must be different from the source and editable. Spotify Development Mode access and limits can change; check the [Spotify migration guide](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide) and your Dashboard.
 
 ## How it works
 
@@ -20,7 +22,7 @@ The app keeps a stable shuffled order for the listening session. Next and previo
 
 Spotify's [remove endpoint](https://developer.spotify.com/documentation/web-api/reference/remove-items-playlist) accepts an item URI and playlist snapshot, but no occurrence position. **Remove and skip is blocked when the same URI occurs more than once in the source playlist.** Normal skip still works. The app also blocks stale or changed playlist snapshots for review. If Spotify may have accepted an archive add without confirming it, the app asks you to check the archive in Spotify before choosing a recovery action. See the [API decision record](docs/architecture.md).
 
-Spotify provides the metadata, artwork, and audio through its Web Playback SDK in your browser. Rotation stores no audio. The Spotify account's SDK `account_error` indicates when Premium playback is unavailable; playlist configuration can remain usable.
+Spotify provides the metadata and artwork shown in Rotation and plays audio in the selected Spotify app or Connect device. Rotation does not play or store audio. If playback control is unavailable, playlist configuration remains usable.
 
 ## Data, updates, and troubleshooting
 
@@ -31,7 +33,8 @@ Replacing the extracted app folder updates the program without deleting your sav
 | Redirect mismatch | Dashboard URI must be exactly `http://127.0.0.1:3000/auth/callback` for the default port. Use `127.0.0.1`, not `localhost`. |
 | Setup says “Refresh setup and try again” after saving credentials | Update to a package built after the Windows setup form fix, then reopen setup and submit again. Older packages could send a browser form request with `Origin: null`. |
 | Spotify login refused | Confirm Developer Dashboard access, app owner eligibility, and current Development Mode limits. |
-| Browser player unavailable | Confirm Premium, a supported browser, a user gesture to start, and any SDK error shown in the app. |
+| No Spotify device appears | Open Spotify on the intended device, make sure it is online and signed into the same account, then refresh the device list. Some device models may not appear through Spotify's API. |
+| Device will not play | Confirm Premium and choose a device that is available and unrestricted. If it disappeared, refresh the device list. |
 | Playlist cannot be edited | Confirm the account can edit it and granted the playlist modify scope. |
 | Port 3000 is in use | Reopen the existing Rotation tab or quit the other process using that port. |
 | Settings disappear after restart | Check the user profile data directories and whether the config's session secret changed. |

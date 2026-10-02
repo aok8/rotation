@@ -29,7 +29,7 @@ app.addHook("onSend", async (_req, reply, payload) => {
     .header("X-Frame-Options", "DENY")
     .header(
       "Content-Security-Policy",
-      "default-src 'self'; script-src 'self' https://sdk.scdn.co; connect-src 'self' https://api.spotify.com https://*.spotify.com wss://*.spotify.com; img-src 'self' https://i.scdn.co https://mosaic.scdn.co data:; style-src 'self' 'unsafe-inline'; font-src 'self'; media-src blob: https://*.scdn.co https://*.spotify.com; frame-src https://sdk.scdn.co https://*.spotify.com; worker-src 'self' blob:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'",
+      "default-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' https://i.scdn.co https://mosaic.scdn.co data:; style-src 'self' 'unsafe-inline'; font-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self'",
     );
   return payload;
 });

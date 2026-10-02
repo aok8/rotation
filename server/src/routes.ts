@@ -4,17 +4,20 @@ import {
   baseOrigin,
   desktopControlToken,
   desktopMode,
-  idPattern,
+  uriPattern,
 } from "./config.js";
 import { AppError, requireSession, requireCsrf, id, object } from "./errors.js";
 import { sessionFrom, save } from "./store.js";
+import { allPlaylists, selected, loadItems, spotify } from "./spotify.js";
 import {
-  allPlaylists,
-  selected,
-  loadItems,
-  spotify,
-  refresh,
-} from "./spotify.js";
+  deviceId,
+  devices,
+  playbackState,
+  requireCurrentPlayback,
+  requireDevice,
+  playWindow,
+  playbackCommand,
+} from "./playback.js";
 import {
   current,
   rotation,
@@ -136,11 +139,37 @@ export function registerApiRoutes(app: FastifyInstance) {
       );
     const b = object(req.body);
     const r = rotation(s);
+    let nextIndex: number;
     if (b.direction === "next")
-      r.currentIndex = Math.min(r.currentIndex + 1, r.order.length);
+      nextIndex = Math.min(r.currentIndex + 1, r.order.length);
     else if (b.direction === "previous")
-      r.currentIndex = Math.max(0, r.currentIndex - 1);
+      nextIndex = Math.max(0, r.currentIndex - 1);
     else throw new AppError("invalid_direction", "Choose previous or next.");
+    if (b.deviceId !== undefined) {
+      const selectedDevice = deviceId(b.deviceId);
+      if (nextIndex < r.order.length) {
+        await playWindow(s, r, nextIndex, selectedDevice);
+      } else {
+        await requireDevice(s, selectedDevice);
+        const state = await playbackState(s);
+        const previousItem = current(r);
+        if (
+          state.deviceId === selectedDevice &&
+          state.uri === previousItem?.uri
+        )
+          await playbackCommand(
+            s,
+            `/me/player/pause?device_id=${encodeURIComponent(selectedDevice)}`,
+          );
+        else if (state.uri || state.isPlaying)
+          throw new AppError(
+            "playback_mismatch",
+            "Spotify is playing something else. Refresh playback.",
+            409,
+          );
+      }
+    }
+    r.currentIndex = nextIndex;
     save();
     return r;
   });
@@ -277,29 +306,82 @@ export function registerApiRoutes(app: FastifyInstance) {
       busy = false;
     }
   });
-  app.get("/api/token", async (req) => {
+  app.get("/api/playback/devices", async (req, reply) => {
+    reply.header("Cache-Control", "no-store");
+    return devices(requireSession(req));
+  });
+  app.get("/api/playback/state", async (req, reply) => {
+    reply.header("Cache-Control", "no-store");
+    return playbackState(requireSession(req));
+  });
+  app.put("/api/playback/seek", async (req) => {
     const s = requireSession(req);
-    if (s.tokens.expiresAt < Date.now() + 60_000) await refresh(s);
-    return { accessToken: s.tokens.access };
+    requireCsrf(req, s);
+    const b = object(req.body);
+    const selectedDevice = deviceId(b.deviceId);
+    const r = rotation(s);
+    const item = current(r);
+    if (
+      !item ||
+      !Number.isInteger(b.positionMs) ||
+      (b.positionMs as number) < 0 ||
+      (b.positionMs as number) >= item.durationMs
+    )
+      throw new AppError(
+        "invalid_playback",
+        "Choose a position within the active track.",
+      );
+    await requireDevice(s, selectedDevice);
+    await requireCurrentPlayback(s, selectedDevice, item.uri);
+    await playbackCommand(
+      s,
+      `/me/player/seek?device_id=${encodeURIComponent(selectedDevice)}&position_ms=${b.positionMs}`,
+    );
+    return { ok: true };
   });
   app.put("/api/playback/control", async (req) => {
     const s = requireSession(req);
     requireCsrf(req, s);
     const b = object(req.body);
-    if (
-      typeof b.deviceId !== "string" ||
-      !idPattern.test(b.deviceId) ||
-      (b.action !== "pause" && b.action !== "resume")
-    )
+    const selectedDevice = deviceId(b.deviceId);
+    if (b.action !== "pause" && b.action !== "resume")
       throw new AppError(
         "invalid_playback",
         "Choose pause or resume for a connected player.",
       );
+    const r = rotation(s);
+    const item = current(r);
+    let expectedUri = item?.uri;
+    if (b.uri !== undefined) {
+      if (
+        b.action !== "pause" ||
+        typeof b.uri !== "string" ||
+        !uriPattern.test(b.uri)
+      )
+        throw new AppError("invalid_playback", "Choose a Rotation track.");
+      const recentRemoval = s.operations.some(
+        (op) =>
+          op.status === "complete" &&
+          op.sourceId === r.source.id &&
+          op.uri === b.uri &&
+          op.at > Date.now() - 10 * 60_000,
+      );
+      if (!recentRemoval)
+        throw new AppError(
+          "playback_mismatch",
+          "This track was not just removed from Rotation.",
+          409,
+        );
+      expectedUri = b.uri;
+    }
+    if (!expectedUri)
+      throw new AppError("item_changed", "Choose a Rotation track.", 409);
+    await requireDevice(s, selectedDevice);
+    await requireCurrentPlayback(s, selectedDevice, expectedUri);
     const command = b.action === "pause" ? "pause" : "play";
-    await spotify(
+    await playbackCommand(
       s,
-      `/me/player/${command}?device_id=${encodeURIComponent(b.deviceId)}`,
-      { method: "PUT" },
+      `/me/player/${command}?device_id=${encodeURIComponent(selectedDevice)}`,
     );
     return { ok: true };
   });
@@ -309,21 +391,28 @@ export function registerApiRoutes(app: FastifyInstance) {
     const b = object(req.body);
     const r = rotation(s);
     const item = current(r);
-    if (
-      !item ||
-      b.uri !== item.uri ||
-      typeof b.deviceId !== "string" ||
-      !idPattern.test(b.deviceId)
-    )
+    const selectedDevice = deviceId(b.deviceId);
+    if (!item || b.uri !== item.uri)
       throw new AppError(
         "invalid_playback",
         "Choose the active track and a connected player.",
       );
-    await spotify(
+    if (
+      b.positionMs !== undefined &&
+      (!Number.isInteger(b.positionMs) ||
+        (b.positionMs as number) < 0 ||
+        (b.positionMs as number) >= item.durationMs)
+    )
+      throw new AppError(
+        "invalid_playback",
+        "Choose a position within the active track.",
+      );
+    return playWindow(
       s,
-      `/me/player/play?device_id=${encodeURIComponent(b.deviceId)}`,
-      { method: "PUT", body: JSON.stringify({ uris: [item.uri] }) },
+      r,
+      r.currentIndex,
+      selectedDevice,
+      b.positionMs as number | undefined,
     );
-    return { ok: true };
   });
 }
