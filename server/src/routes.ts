@@ -1,6 +1,11 @@
 import type { FastifyInstance } from "fastify";
 import { randomBytes } from "node:crypto";
-import { idPattern } from "./config.js";
+import {
+  baseOrigin,
+  desktopControlToken,
+  desktopMode,
+  idPattern,
+} from "./config.js";
 import { AppError, requireSession, requireCsrf, id, object } from "./errors.js";
 import { sessionFrom, save } from "./store.js";
 import {
@@ -30,9 +35,28 @@ export function registerApiRoutes(app: FastifyInstance) {
           account: s.user,
           settings: s.settings || null,
           csrfToken: s.csrf,
+          ...(desktopMode ? { desktop: true } : {}),
         }
-      : { authenticated: false };
+      : desktopMode
+        ? {
+            authenticated: false,
+            desktop: true,
+            csrfToken: desktopControlToken,
+          }
+        : { authenticated: false };
   });
+  if (desktopMode) {
+    app.post("/api/desktop/quit", async (req) => {
+      const s = sessionFrom(req);
+      if (
+        req.headers.origin !== baseOrigin ||
+        req.headers["x-csrf-token"] !== (s?.csrf || desktopControlToken)
+      )
+        throw new AppError("csrf", "Refresh the page and try again.", 403);
+      process.send?.({ type: "quit" });
+      return { ok: true };
+    });
+  }
   app.get("/api/playlists", async (req) => ({
     playlists: await allPlaylists(requireSession(req)),
   }));
