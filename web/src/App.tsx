@@ -474,6 +474,8 @@ export default function App() {
         if (!player.current) throw error;
         await player.current.pause();
       }
+    } else {
+      await player.current?.pause();
     }
     setIntent(false);
     setPlayback((previous) =>
