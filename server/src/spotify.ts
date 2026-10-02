@@ -53,7 +53,7 @@ export async function spotify(
       response.status >= 500 ? 502 : response.status,
     );
   }
-  if (response.status === 204) return {};
+  if (response.status === 204) return null;
   if (path.startsWith("/me/player/") && init.method === "PUT") return {};
   if (response.headers.get("content-type")?.includes("json"))
     return response.json();
@@ -88,6 +88,7 @@ export async function refresh(s: Session) {
   s.tokens.access = t.access_token;
   s.tokens.refresh = t.refresh_token || s.tokens.refresh;
   s.tokens.expiresAt = Date.now() + t.expires_in * 1000;
+  if (typeof t.scope === "string") s.grantedScopes = t.scope.split(" ");
   save();
 }
 export async function allPlaylists(s: Session): Promise<Playlist[]> {

@@ -1,6 +1,6 @@
 # Release checks
 
-The build and type checks can run without Spotify. Live checks require the owner's Premium account, a configured Developer app, and an isolated pair of playlists so edits do not affect personal playlists. Live checks on 2026-10-01 verified Spotify sign-in, loading a 402-item playlist, audible browser playback, advancing progress, and pause/resume controls. The remaining matrix rows are release checks, not claimed results. Changes made outside this app may not immediately appear in its player controls.
+The build and type checks can run without Spotify. Live checks require the owner's Premium account, a configured Developer app, an available Connect device, and an isolated pair of playlists so edits do not affect personal playlists. Earlier 2026-10-01 checks verified sign-in, loading a 402-item playlist, and browser playback in the previous SDK design. The device-based playback flow needs a new live verification. The matrix rows below are release checks, not claimed results.
 
 ## Automated and desktop checks
 
@@ -26,8 +26,12 @@ Current evidence on 2026-10-01: server integration tests, desktop runtime tests,
 | Playlist list with more than 50 entries | Pagination returns all accessible entries up to the documented app limit. |
 | Source and archive selection | IDs persist across restart; equal IDs are rejected; None is allowed. |
 | Empty playlist; unavailable/local/episode entries | Empty state appears and unsupported entries do not crash the session. |
-| Premium player, user gesture, pause/seek/previous/next | State follows SDK events; normal navigation never edits playlists. |
-| SDK account or authentication error | Clear message; settings remain reachable when authorization permits. |
+| No devices; restricted or vanished device | Clear picker state and refresh guidance; no silent fallback to another device or browser audio. |
+| Premium device playback, pause/seek/previous/next | Commands target the selected Connect device; state follows Spotify's playback API; normal navigation never edits playlists. |
+| External device or track switch | Controls show the mismatch and do not claim Rotation is still playing its selected track. |
+| End of track and end of rotation | Advance through the stable order once; paused near the end never auto-advances; the last item stops cleanly. |
+| Queue-window boundary | At the end of a 20-track window, upcoming shuffle order is restored; check for an audible jump and avoid repeated refresh calls. |
+| Playback scope, authentication, or Premium error | Reauthorization or clear recovery guidance; playlist settings stay reachable when possible. |
 | One unique source URI, history None | Exactly that source URI is removed; player advances only after API success. |
 | One unique source URI, history selected | Archive receives one item before source removal; success advances. |
 | Duplicate URI in source | Remove action is blocked before archive or source mutation; normal skip works. Test an unplayable duplicate too. |

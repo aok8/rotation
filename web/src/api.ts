@@ -38,6 +38,21 @@ export type Rotation = {
   source?: Playlist | string | null;
   archive?: Playlist | string | null;
 };
+export type ConnectDevice = {
+  id: string | null;
+  name: string;
+  type: string;
+  isActive: boolean;
+  isRestricted: boolean;
+  volumePercent?: number | null;
+};
+export type ConnectPlayback = {
+  deviceId: string | null;
+  uri: string | null;
+  positionMs: number;
+  durationMs: number;
+  isPlaying: boolean;
+};
 export type ApiError = Error & {
   status?: number;
   operationId?: string;
@@ -86,6 +101,8 @@ export async function api<T>(
 
 export function describeError(error: unknown) {
   const e = error as ApiError;
+  if (e?.code === "reauthorization_required")
+    return "Spotify needs updated playback permission. Reconnect your account to continue.";
   if (e?.status === 401)
     return "Your Spotify connection expired. Please sign in again.";
   if (e?.status === 403)

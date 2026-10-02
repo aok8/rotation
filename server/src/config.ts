@@ -29,5 +29,5 @@ export const scopes = [
   "playlist-modify-private",
   "playlist-modify-public",
   "user-modify-playback-state",
-  "streaming",
+  "user-read-playback-state",
 ].join(" ");

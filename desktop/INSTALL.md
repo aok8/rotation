@@ -1,6 +1,6 @@
 # Install rotation on your computer
 
-rotation starts a small local server and opens your default browser. It does not install an always-running service. The browser needs internet access to Spotify, and Spotify Premium is required for music playback.
+rotation starts a small local server and opens controls in your default browser. It does not install an always-running service. Open Spotify on the computer, phone, or speaker where you want audio, then choose that device in rotation. Spotify Premium is required for playback control.
 
 ## Before first launch
 
@@ -19,6 +19,8 @@ Open a successful **Desktop packages** run in the repository's GitHub Actions ta
 The Linux packages target **Arch Linux** on x64 and arm64. Other distributions are **best effort** because their libraries and desktop integration can differ. On Arch Linux, you can run `./Install Desktop Shortcut.sh` once to add an application menu entry. Keep the extracted folder in place because the shortcut points to it. The macOS packages are unsigned and unnotarized, so macOS may block downloaded copies; a signed release is needed for a normal first launch.
 
 On first launch, rotation shows its local setup page. Enter your Spotify Client ID and Client Secret, then continue to Spotify sign-in. The app binds to `127.0.0.1`, so it is available only on that computer.
+
+If you used an older browser-player version, choose **Reconnect Spotify** after updating to grant device and playback-state access. Reconnecting the same Spotify account keeps your saved playlist choices.
 
 ## Launch, quit, and update
 

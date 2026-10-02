@@ -235,6 +235,53 @@ p {
   color: var(--accent);
   font-size: 17px;
 }
+.device-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.9fr);
+  gap: 8px 26px;
+  align-items: center;
+  background: var(--raised);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 18px 22px;
+  margin-bottom: 22px;
+}
+.device-card-copy .eyebrow {
+  margin-bottom: 6px;
+}
+.device-card-copy label {
+  display: block;
+  font-weight: 700;
+  margin-bottom: 5px;
+}
+.device-card-copy p:last-child,
+.device-help {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0;
+}
+.device-controls {
+  display: flex;
+  gap: 8px;
+}
+.device-controls select {
+  min-width: 0;
+  flex: 1;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+.device-controls button {
+  flex: none;
+}
+.device-card > .inline-error,
+.device-card > .device-help {
+  grid-column: 1 / -1;
+  margin: 2px 0 0;
+}
 .player-layout {
   padding-bottom: 90px;
 }
@@ -312,6 +359,12 @@ p {
 .album {
   font-size: 14px;
   color: var(--muted);
+}
+.device-context {
+  color: var(--sage);
+  font-size: 12px;
+  font-weight: 700;
+  margin: 14px 0 0;
 }
 .transport {
   display: flex;
@@ -777,6 +830,9 @@ p {
   margin-top: 24px;
 }
 @media (max-width: 800px) {
+  .device-card {
+    grid-template-columns: 1fr;
+  }
   .player-card {
     grid-template-columns: 1fr;
     max-width: 600px;
@@ -832,6 +888,9 @@ p {
   .config-chip {
     width: 100%;
     justify-content: space-between;
+  }
+  .device-controls {
+    flex-direction: column;
   }
   .player-card {
     padding: 16px;

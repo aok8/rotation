@@ -5,21 +5,16 @@ import {
   describeError,
   setCsrfToken,
   type ApiError,
+  type ConnectDevice,
+  type ConnectPlayback,
   type Playlist,
   type Rotation,
   type Session,
   type TrackItem,
 } from "./api";
-import {
-  loadSpotifySdk,
-  type PlaybackState,
-  type SpotifyPlayer,
-} from "./spotify-sdk";
-import { hasLocalTrackEnded, reconcileSdkState } from "./playback-state";
+import { classifyRemotePlayback } from "./connect-state";
 
 type Notice = { text: string; kind: "ok" | "error" | "info" } | null;
-type Phase =
-  "connecting" | "ready" | "playing" | "paused" | "premium" | "error";
 const formatTime = (ms = 0) => {
   const seconds = Math.floor(Math.max(0, ms) / 1000);
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
@@ -114,11 +109,16 @@ export default function App() {
   const [rotationLoading, setRotationLoading] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
   const [busy, setBusy] = useState(false);
-  const [phase, setPhase] = useState<Phase>("connecting");
   const [playerMessage, setPlayerMessage] = useState("");
+  const [devices, setDevices] = useState<ConnectDevice[]>([]);
+  const [devicesLoading, setDevicesLoading] = useState(false);
+  const [deviceError, setDeviceError] = useState("");
+  const [reauthorizationNeeded, setReauthorizationNeeded] = useState(false);
+  const [activeDeviceId, setActiveDeviceId] = useState<string | null>(null);
   const [deviceId, setDeviceId] = useState("");
-  const [playback, setPlayback] = useState<PlaybackState | null>(null);
+  const [playback, setPlayback] = useState<ConnectPlayback | null>(null);
   const [playingIntent, setPlayingIntent] = useState(false);
+  const [pendingUri, setPendingUri] = useState("");
   const [position, setPosition] = useState(0);
   const [seekValue, setSeekValue] = useState<number | null>(null);
   const [confirm, setConfirm] = useState(false);
@@ -130,14 +130,18 @@ export default function App() {
     conflict: boolean;
     uncertain: boolean;
   } | null>(null);
-  const player = useRef<SpotifyPlayer | null>(null);
   const deviceIdRef = useRef("");
   const playingIntentRef = useRef(false);
-  const desiredUriRef = useRef("");
+  const pendingUriRef = useRef("");
+  const pendingSinceRef = useRef(0);
+  const queuedThroughRef = useRef(-1);
+  const refreshingQueueRef = useRef(false);
+  const pollingRef = useRef(false);
+  const nextPollAllowedRef = useRef(0);
+  const pollRef = useRef<() => Promise<void>>(async () => {});
   const command = useRef(false);
   const rotationRef = useRef<Rotation | null>(null);
   const positionRef = useRef(0);
-  const ended = useRef(false);
   function setIntent(playing: boolean) {
     playingIntentRef.current = playing;
     setPlayingIntent(playing);
@@ -215,6 +219,9 @@ export default function App() {
       setPlayback(null);
       setPosition(0);
       setIntent(false);
+      setPendingUri("");
+      pendingUriRef.current = "";
+      queuedThroughRef.current = -1;
     } catch (e) {
       setRotationError(describeError(e));
     } finally {
@@ -231,124 +238,56 @@ export default function App() {
     if (session?.authenticated && session.settings?.sourceId)
       void loadRotation();
   }, [session?.authenticated, loadRotation]);
+  const loadDevices = useCallback(async () => {
+    setDevicesLoading(true);
+    setDeviceError("");
+    setReauthorizationNeeded(false);
+    try {
+      const data = await api<{
+        devices: ConnectDevice[];
+        activeDeviceId: string | null;
+      }>("/api/playback/devices");
+      const available = data.devices.filter(
+        (device) => device.id && !device.isRestricted,
+      );
+      const saved = sessionStorage.getItem("rotation-connect-device");
+      const previous = deviceIdRef.current;
+      const chosen =
+        [previous, saved, data.activeDeviceId].find((id) =>
+          available.some((device) => device.id === id),
+        ) || (available.length === 1 ? available[0].id! : "");
+      setDevices(data.devices);
+      setActiveDeviceId(data.activeDeviceId);
+      setDeviceId(chosen);
+      deviceIdRef.current = chosen;
+      if (chosen !== previous) {
+        setIntent(false);
+        setPlayback(null);
+        setPosition(0);
+        setPendingUri("");
+        pendingUriRef.current = "";
+        queuedThroughRef.current = -1;
+      }
+    } catch (error) {
+      setDeviceError(describeError(error));
+      setReauthorizationNeeded(
+        (error as ApiError).code === "reauthorization_required",
+      );
+    } finally {
+      setDevicesLoading(false);
+    }
+  }, []);
   useEffect(() => {
-    if (!session?.authenticated) return;
-    let cancelled = false;
-    let instance: SpotifyPlayer | null = null;
-    void loadSpotifySdk()
-      .then(() => {
-        if (cancelled || !window.Spotify) return;
-        instance = new window.Spotify.Player({
-          name: "rotation browser player",
-          volume: 0.8,
-          getOAuthToken: (callback) => {
-            void api<{ accessToken: string }>("/api/token")
-              .then((data) => callback(data.accessToken))
-              .catch((e) => {
-                setIntent(false);
-                setPhase("error");
-                setPlayerMessage(describeError(e));
-              });
-          },
-        });
-        player.current = instance;
-        instance.addListener(
-          "ready",
-          ({ device_id }: { device_id: string }) => {
-            setDeviceId(device_id);
-            if (!playingIntentRef.current) setPhase("ready");
-            setPlayerMessage("");
-          },
-        );
-        instance.addListener("not_ready", () => {
-          setDeviceId("");
-          setIntent(false);
-          setPhase("connecting");
-          setPlayerMessage("The player disconnected. Try reconnecting.");
-        });
-        instance.addListener(
-          "player_state_changed",
-          (state: PlaybackState | null) => {
-            if (!state) return;
-            const active = rotationRef.current;
-            const currentKey = active?.order[active.currentIndex];
-            const currentItem = active?.items.find(
-              (item) => item.key === currentKey,
-            );
-            const next = reconcileSdkState(state, {
-              desiredUri: desiredUriRef.current,
-              playingIntent: playingIntentRef.current,
-              position: positionRef.current,
-              expectedDuration: currentItem?.durationMs ?? 0,
-            });
-            if (!next) return;
-            setPlayback(next.playback);
-            setPosition(next.position);
-            positionRef.current = next.position;
-            if (next.phase) setPhase(next.phase);
-            if (
-              next.ended &&
-              !ended.current &&
-              rotationRef.current &&
-              !command.current
-            ) {
-              ended.current = true;
-              setIntent(false);
-              void navigate("next", true);
-            } else if (!next.ended) ended.current = false;
-          },
-        );
-        instance.addListener("account_error", () => {
-          setIntent(false);
-          setPhase("premium");
-          setPlayerMessage(
-            "Spotify Premium is required for browser playback. Your playlist settings remain available.",
-          );
-        });
-        for (const event of [
-          "initialization_error",
-          "authentication_error",
-          "playback_error",
-        ])
-          instance.addListener(event, ({ message }: { message: string }) => {
-            setIntent(false);
-            setPhase("error");
-            setPlayerMessage(
-              message || "Spotify playback is unavailable. Try reconnecting.",
-            );
-          });
-        setPhase("connecting");
-        void instance.connect().then((ok) => {
-          if (!ok && !cancelled) {
-            setIntent(false);
-            setPhase("error");
-            setPlayerMessage("The Spotify browser player could not connect.");
-          }
-        });
-      })
-      .catch((e) => {
-        if (!cancelled) {
-          setIntent(false);
-          setPhase("error");
-          setPlayerMessage(describeError(e));
-        }
-      });
-    return () => {
-      cancelled = true;
-      instance?.disconnect();
-      if (player.current === instance) player.current = null;
-    };
-    // Only reconnect the SDK after authentication changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session?.authenticated]);
+    if (session?.authenticated) void loadDevices();
+  }, [session?.authenticated, loadDevices]);
   useEffect(() => {
     if (!playingIntent || !playback) return;
-    const id = setInterval(
-      () => setPosition((value) => Math.min(playback.duration, value + 250)),
-      250,
+    const id = window.setInterval(
+      () => setPosition((value) => Math.min(playback.durationMs, value + 1_000)),
+      1_000,
     );
-    return () => clearInterval(id);
-  }, [playingIntent, playback?.duration]);
+    return () => window.clearInterval(id);
+  }, [playingIntent, playback?.durationMs]);
   const ordered = useMemo(() => {
     if (!rotation) return [];
     const byKey = new Map(rotation.items.map((item) => [item.key, item]));
@@ -368,50 +307,78 @@ export default function App() {
     !!current &&
     (rotation?.items.filter((item) => item.uri === current.uri).length ?? 0) >
       1;
-  const canPlay = !!deviceId && phase !== "premium";
+  const selectedDevice = devices.find((device) => device.id === deviceId);
+  const canPlay = !!selectedDevice && !selectedDevice.isRestricted;
+  function selectDevice(id: string) {
+    setDeviceId(id);
+    deviceIdRef.current = id;
+    if (id) sessionStorage.setItem("rotation-connect-device", id);
+    else sessionStorage.removeItem("rotation-connect-device");
+    setIntent(false);
+    setPlayback(null);
+    setPosition(0);
+    setPendingUri("");
+    pendingUriRef.current = "";
+    queuedThroughRef.current = -1;
+    setPlayerMessage(
+      id
+        ? "Ready to play on the selected Spotify device."
+        : "Choose a Spotify device to listen.",
+    );
+  }
   async function run(task: () => Promise<void>) {
     if (command.current) return;
     command.current = true;
     setBusy(true);
     try {
       await task();
-    } catch (e) {
-      setNotice({ text: describeError(e), kind: "error" });
+    } catch (error) {
+      setNotice({ text: describeError(error), kind: "error" });
     } finally {
       command.current = false;
       setBusy(false);
     }
   }
-  async function play(item: TrackItem) {
-    if (!deviceIdRef.current)
-      throw new Error("The browser player is connecting. Try again shortly.");
-    const previousUri = desiredUriRef.current;
-    desiredUriRef.current = item.uri;
-    try {
-      await api("/api/playback", {
-        method: "PUT",
-        body: JSON.stringify({ deviceId: deviceIdRef.current, uri: item.uri }),
-      });
-    } catch (error) {
-      desiredUriRef.current = previousUri;
-      throw error;
-    }
-    setIntent(true);
-    ended.current = false;
+  function markPending(item: TrackItem, startPosition = 0) {
+    pendingUriRef.current = item.uri;
+    pendingSinceRef.current = Date.now();
+    setPendingUri(item.uri);
+    setIntent(false);
     setPlayback({
-      paused: false,
-      position: 0,
-      duration: item.durationMs ?? 0,
-      track_window: { current_track: { uri: item.uri } },
+      deviceId: deviceIdRef.current,
+      uri: item.uri,
+      positionMs: startPosition,
+      durationMs: item.durationMs ?? 0,
+      isPlaying: false,
     });
-    setPosition(0);
-    setPhase("playing");
+    setPosition(startPosition);
+    positionRef.current = startPosition;
+    setPlayerMessage(
+      `Starting on ${selectedDevice?.name || "Spotify device"}…`,
+    );
+    window.setTimeout(() => void pollRef.current(), 1_500);
+  }
+  async function play(item: TrackItem, startPosition = 0) {
+    if (!deviceIdRef.current)
+      throw new Error("Choose a Spotify device, then try again.");
+    const result = await api<{ ok: true; queuedThroughIndex: number }>(
+      "/api/playback",
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          deviceId: deviceIdRef.current,
+          uri: item.uri,
+          positionMs: startPosition,
+        }),
+      },
+    );
+    queuedThroughRef.current = result.queuedThroughIndex;
+    markPending(item, startPosition);
   }
   async function togglePlayback() {
+    if (!canPlay) return;
     if (playingIntent) {
       await run(async () => {
-        if (!deviceIdRef.current)
-          throw new Error("The Spotify player is not ready.");
         await api("/api/playback/control", {
           method: "PUT",
           body: JSON.stringify({
@@ -421,13 +388,16 @@ export default function App() {
         });
         setIntent(false);
         setPlayback((previous) =>
-          previous ? { ...previous, paused: true } : previous,
+          previous ? { ...previous, isPlaying: false } : previous,
         );
-        setPhase("paused");
+        setPlayerMessage(
+          `Paused on ${selectedDevice?.name || "Spotify device"}.`,
+        );
       });
     } else if (
-      playback?.track_window?.current_track?.uri === current?.uri &&
-      deviceIdRef.current
+      playback?.uri === current?.uri &&
+      playback.deviceId === deviceIdRef.current &&
+      !pendingUriRef.current
     ) {
       await run(async () => {
         await api("/api/playback/control", {
@@ -437,19 +407,14 @@ export default function App() {
             action: "resume",
           }),
         });
-        desiredUriRef.current = current!.uri;
-        setIntent(true);
-        setPlayback((previous) =>
-          previous ? { ...previous, paused: false } : previous,
-        );
-        setPhase("playing");
+        markPending(current!, positionRef.current);
       });
     } else await start();
   }
   async function start() {
     await run(async () => {
-      if (!player.current) throw new Error("The Spotify player is loading.");
-      await player.current.activateElement();
+      if (!canPlay)
+        throw new Error("Choose an available Spotify device first.");
       const updated =
         rotationRef.current ??
         (await api<Rotation>("/api/rotation/start", { method: "POST" }));
@@ -460,47 +425,83 @@ export default function App() {
       if (item) await play(item);
     });
   }
-  async function pauseAtEnd() {
-    if (deviceIdRef.current) {
-      try {
-        await api("/api/playback/control", {
-          method: "PUT",
-          body: JSON.stringify({
-            deviceId: deviceIdRef.current,
-            action: "pause",
-          }),
-        });
-      } catch (error) {
-        if (!player.current) throw error;
-        await player.current.pause();
-      }
-    } else {
-      await player.current?.pause();
+  async function pauseAtEnd(removedUri?: string) {
+    if (
+      deviceIdRef.current &&
+      (playingIntentRef.current || pendingUriRef.current)
+    ) {
+      await api("/api/playback/control", {
+        method: "PUT",
+        body: JSON.stringify({
+          deviceId: deviceIdRef.current,
+          action: "pause",
+          uri: removedUri,
+        }),
+      });
     }
     setIntent(false);
+    setPendingUri("");
+    pendingUriRef.current = "";
     setPlayback((previous) =>
-      previous ? { ...previous, paused: true } : previous,
+      previous ? { ...previous, isPlaying: false } : previous,
     );
-    setPhase("paused");
+  }
+  async function seekTo(nextPosition: number) {
+    if (!deviceIdRef.current) throw new Error("Choose a Spotify device first.");
+    await api("/api/playback/seek", {
+      method: "PUT",
+      body: JSON.stringify({
+        deviceId: deviceIdRef.current,
+        positionMs: nextPosition,
+      }),
+    });
+    setPosition(nextPosition);
+    positionRef.current = nextPosition;
+    setSeekValue(null);
+    void pollRef.current();
   }
   async function navigate(direction: "next" | "previous", automatic = false) {
     await run(async () => {
-      if (direction === "previous" && position > 3000 && player.current) {
-        await player.current.seek(0);
-        setPosition(0);
+      if (!deviceIdRef.current)
+        throw new Error("Choose a Spotify device first.");
+      if (direction === "previous" && positionRef.current > 3_000) {
+        await seekTo(0);
         return;
       }
-      const updated = await api<Rotation>("/api/rotation/navigate", {
-        method: "POST",
-        body: JSON.stringify({ direction }),
-      });
+      // The server plays the new window before it persists the index. A failed
+      // Spotify command leaves the app on its previous item.
+      let updated: Rotation;
+      try {
+        updated = await api<Rotation>("/api/rotation/navigate", {
+          method: "POST",
+          body: JSON.stringify({ direction, deviceId: deviceIdRef.current }),
+        });
+      } catch (error) {
+        if (automatic) {
+          setIntent(false);
+          setPlayerMessage(
+            "Spotify stopped at this track. Press Next or Play to continue.",
+          );
+        }
+        throw error;
+      }
       setRotation(updated);
+      rotationRef.current = updated;
       const item = updated.items.find(
         (entry) => entry.key === updated.order[updated.currentIndex],
       );
-      if (item) await play(item);
-      else {
-        await pauseAtEnd();
+      if (item) {
+        queuedThroughRef.current = Math.min(
+          updated.order.length - 1,
+          updated.currentIndex + 19,
+        );
+        markPending(item);
+      } else {
+        setIntent(false);
+        setPlayback(null);
+        setPosition(0);
+        setPendingUri("");
+        pendingUriRef.current = "";
         if (automatic)
           setNotice({
             text: "You reached the end of this rotation. Start again for a fresh order.",
@@ -551,13 +552,33 @@ export default function App() {
       const next = updated.items.find(
         (item) => item.key === updated.order[updated.currentIndex],
       );
-      if (next && canPlay) await play(next);
-      else await pauseAtEnd();
+      if (next && canPlay) {
+        try {
+          await play(next);
+        } catch (error) {
+          setIntent(false);
+          setNotice({
+            text: `Track removed, but the next track could not start: ${describeError(error)} Press Play to retry without repeating removal.`,
+            kind: "error",
+          });
+        }
+      } else {
+        try {
+          await pauseAtEnd(current.uri);
+        } catch (error) {
+          setIntent(false);
+          setNotice({
+            text: `Track removed, but Spotify could not pause: ${describeError(error)} Pause it in Spotify.`,
+            kind: "error",
+          });
+        }
+      }
     });
   }
   async function retry() {
     if (!failure?.operationId) return;
     await run(async () => {
+      const removedUri = current?.uri;
       const response = await api<{ rotation: Rotation }>(
         "/api/rotation/retry",
         {
@@ -572,10 +593,199 @@ export default function App() {
       const next = updated.items.find(
         (item) => item.key === updated.order[updated.currentIndex],
       );
-      if (next && canPlay) await play(next);
-      else await pauseAtEnd();
+      if (next && canPlay) {
+        try {
+          await play(next);
+        } catch (error) {
+          setIntent(false);
+          setNotice({
+            text: `Removal completed, but the next track could not start: ${describeError(error)} Press Play to retry.`,
+            kind: "error",
+          });
+        }
+      } else {
+        try {
+          await pauseAtEnd(removedUri);
+        } catch (error) {
+          setIntent(false);
+          setNotice({
+            text: `Removal completed, but Spotify could not pause: ${describeError(error)} Pause it in Spotify.`,
+            kind: "error",
+          });
+        }
+      }
     });
   }
+  async function refreshPlaybackOnce() {
+    if (
+      !deviceIdRef.current ||
+      command.current ||
+      Date.now() < nextPollAllowedRef.current
+    )
+      return;
+    let remote: ConnectPlayback;
+    try {
+      remote = await api<ConnectPlayback>("/api/playback/state");
+    } catch (error) {
+      const apiError = error as ApiError;
+      if (apiError.status === 429)
+        nextPollAllowedRef.current =
+          Date.now() + (apiError.retryAfter ?? 10) * 1_000;
+      setPlayerMessage(describeError(error));
+      return;
+    }
+    const active = rotationRef.current;
+    const index = active?.currentIndex ?? -1;
+    const currentItem = active?.items.find(
+      (item) => item.key === active.order[index],
+    );
+    const nextItem = active?.items.find(
+      (item) => item.key === active.order[index + 1],
+    );
+    if (!currentItem) return;
+
+    if (pendingUriRef.current) {
+      if (
+        remote.deviceId === deviceIdRef.current &&
+        remote.uri === pendingUriRef.current &&
+        remote.isPlaying
+      ) {
+        pendingUriRef.current = "";
+        setPendingUri("");
+        setPlayback(remote);
+        setPosition(remote.positionMs);
+        positionRef.current = remote.positionMs;
+        setIntent(true);
+        setPlayerMessage(
+          `Playing on ${selectedDevice?.name || "Spotify device"}.`,
+        );
+      } else if (Date.now() - pendingSinceRef.current >= 20_000) {
+        pendingUriRef.current = "";
+        setPendingUri("");
+        setIntent(false);
+        setPlayerMessage(
+          "Spotify has not confirmed playback on this device. Refresh devices or try Play again.",
+        );
+      }
+      return;
+    }
+
+    const transition = classifyRemotePlayback(
+      remote,
+      deviceIdRef.current,
+      currentItem.uri,
+      nextItem?.uri ?? null,
+      positionRef.current,
+      currentItem.durationMs ?? 0,
+      playingIntentRef.current,
+    );
+    if (transition === "current-playing") {
+      setPlayback(remote);
+      setPosition(remote.positionMs);
+      positionRef.current = remote.positionMs;
+      setIntent(true);
+      setActiveDeviceId(remote.deviceId);
+      setPlayerMessage(
+        `Playing on ${selectedDevice?.name || "Spotify device"}.`,
+      );
+      if (queuedThroughRef.current < 0) queuedThroughRef.current = index;
+      if (
+        nextItem &&
+        queuedThroughRef.current < active!.order.length - 1 &&
+        index >= Math.max(0, queuedThroughRef.current - 2) &&
+        !refreshingQueueRef.current
+      ) {
+        refreshingQueueRef.current = true;
+        try {
+          const result = await api<{ queuedThroughIndex: number }>(
+            "/api/playback",
+            {
+              method: "PUT",
+              body: JSON.stringify({
+                deviceId: deviceIdRef.current,
+                uri: currentItem.uri,
+                positionMs: remote.positionMs,
+              }),
+            },
+          );
+          queuedThroughRef.current = result.queuedThroughIndex;
+        } catch (error) {
+          setPlayerMessage(
+            `Could not refresh the upcoming queue: ${describeError(error)}`,
+          );
+        } finally {
+          refreshingQueueRef.current = false;
+        }
+      }
+    } else if (transition === "current-paused") {
+      setPlayback(remote);
+      setPosition(remote.positionMs);
+      positionRef.current = remote.positionMs;
+      setIntent(false);
+      setPlayerMessage(
+        `Paused on ${selectedDevice?.name || "Spotify device"}.`,
+      );
+    } else if (transition === "expected-next") {
+      if (command.current) return;
+      command.current = true;
+      setBusy(true);
+      try {
+        const updated = await api<Rotation>("/api/rotation/navigate", {
+          method: "POST",
+          body: JSON.stringify({ direction: "next" }),
+        });
+        const selected = updated.items.find(
+          (item) => item.key === updated.order[updated.currentIndex],
+        );
+        if (selected?.uri !== remote.uri)
+          throw new Error(
+            "Spotify moved to a track outside the saved rotation. Choose Play to return.",
+          );
+        setRotation(updated);
+        rotationRef.current = updated;
+        setPlayback(remote);
+        setPosition(remote.positionMs);
+        positionRef.current = remote.positionMs;
+        setIntent(remote.isPlaying);
+        setPlayerMessage(
+          `Playing on ${selectedDevice?.name || "Spotify device"}.`,
+        );
+      } catch (error) {
+        setIntent(false);
+        setNotice({ text: describeError(error), kind: "error" });
+        setPlayerMessage(
+          "Spotify advanced, but rotation could not sync. Press Play to return to your rotation.",
+        );
+      } finally {
+        command.current = false;
+        setBusy(false);
+      }
+    } else if (transition === "ended") {
+      await navigate("next", true);
+    } else {
+      setIntent(false);
+      setPlayback(null);
+      setPosition(0);
+      positionRef.current = 0;
+      setPlayerMessage(
+        transition === "other-device"
+          ? "Playback moved to another Spotify device. Choose that device and press Play to return to your rotation."
+          : transition === "other-track"
+            ? "Spotify continued to a track outside this rotation. Pause it in Spotify, or press Play to return to your rotation."
+            : "No playback is active on the selected device. Press Play to start listening.",
+      );
+    }
+  }
+  async function refreshPlayback() {
+    if (pollingRef.current) return;
+    pollingRef.current = true;
+    try {
+      await refreshPlaybackOnce();
+    } finally {
+      pollingRef.current = false;
+    }
+  }
+  pollRef.current = refreshPlayback;
   function askRemove() {
     const key = `rotation-confirmed:${session?.settings?.archiveId || "none"}`;
     if (sessionStorage.getItem(key) === "yes") void remove();
@@ -611,9 +821,13 @@ export default function App() {
   async function logout() {
     await run(async () => {
       await api("/auth/logout", { method: "POST" });
-      player.current?.disconnect();
       setRotation(null);
       setPlaylists([]);
+      setDevices([]);
+      setDeviceId("");
+      deviceIdRef.current = "";
+      setIntent(false);
+      setPlayback(null);
       setCsrfToken();
       if (session?.desktop) await loadSession();
       else setSession({ authenticated: false });
@@ -623,22 +837,30 @@ export default function App() {
   async function quitDesktop() {
     await run(async () => {
       await api("/api/desktop/quit", { method: "POST" });
-      setNotice({ text: "rotation is closing. You can close this tab.", kind: "info" });
+      setNotice({
+        text: "rotation is closing. You can close this tab.",
+        kind: "info",
+      });
     });
   }
-  const duration = playback?.duration || current?.durationMs || 0;
+  const duration = playback?.durationMs || current?.durationMs || 0;
   const progress = seekValue ?? position;
   useEffect(() => {
-    if (
-      !hasLocalTrackEnded(playingIntent, !!current, position, duration) ||
-      ended.current ||
-      command.current
-    )
-      return;
-    ended.current = true;
-    setIntent(false);
-    void navigate("next", true);
-  }, [playingIntent, current, duration, position]);
+    if (!session?.authenticated || !deviceId || page !== "player") return;
+    const poll = () => {
+      if (document.visibilityState === "visible") void pollRef.current();
+    };
+    poll();
+    const interval = window.setInterval(
+      poll,
+      pendingUri ? 3_000 : playingIntent ? 5_000 : 15_000,
+    );
+    document.addEventListener("visibilitychange", poll);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", poll);
+    };
+  }, [session?.authenticated, deviceId, page, playingIntent, pendingUri]);
   return (
     <div className="app">
       <header className="header wrap">
@@ -710,12 +932,12 @@ export default function App() {
               Continue with Spotify
             </a>
             <p className="signin-detail">
-              Connect to read and manage your playlists and play music in this
-              browser. Spotify Premium is needed for playback.
+              Connect to read and manage your playlists and control an available
+              Spotify device. Spotify Premium is needed for playback.
             </p>
             <p className="privacy">
-              Your credentials stay with Spotify. Tokens stay on your
-              self-hosted server; no music is stored here.
+              Your Spotify password stays with Spotify. Connection tokens stay
+              in your local app data; no music is stored here.
             </p>
             {session?.error && (
               <p className="inline-error" role="alert">
@@ -865,6 +1087,66 @@ export default function App() {
                     <span aria-hidden="true">↗</span>
                   </button>
                 </div>
+                <div className="device-card">
+                  <div className="device-card-copy">
+                    <p className="eyebrow">Listen on Spotify</p>
+                    <label htmlFor="connect-device">Playback device</label>
+                    <p>
+                      Choose where Spotify should play your rotation. Audio
+                      plays on that device, not in this browser.
+                    </p>
+                  </div>
+                  <div className="device-controls">
+                    <select
+                      id="connect-device"
+                      value={deviceId}
+                      onChange={(event) => selectDevice(event.target.value)}
+                      disabled={devicesLoading || busy}
+                    >
+                      <option value="">Choose an available device</option>
+                      {devices.map((device, index) => (
+                        <option
+                          key={device.id || `restricted-${index}`}
+                          value={device.id || ""}
+                          disabled={!device.id || device.isRestricted}
+                        >
+                          {device.name} · {device.type}
+                          {device.id === activeDeviceId ? " · Active" : ""}
+                          {device.isRestricted || !device.id
+                            ? " · Unavailable"
+                            : ""}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      className="secondary-button"
+                      onClick={() => void loadDevices()}
+                      disabled={devicesLoading || busy}
+                    >
+                      {devicesLoading ? "Refreshing…" : "Refresh devices"}
+                    </button>
+                  </div>
+                  {deviceError && (
+                    <p className="inline-error" role="alert">
+                      {deviceError}{" "}
+                      {reauthorizationNeeded && (
+                        <a href="/auth/start">Reconnect Spotify</a>
+                      )}
+                    </p>
+                  )}
+                  {!devicesLoading && devices.length === 0 && !deviceError && (
+                    <p className="device-help">
+                      No Spotify devices found. Open Spotify on your phone,
+                      computer, or speaker, then refresh. Some devices may not
+                      appear in Spotify Connect.
+                    </p>
+                  )}
+                  {devices.length > 0 && !deviceId && (
+                    <p className="device-help">
+                      Select an available device to enable playback controls.
+                    </p>
+                  )}
+                </div>
                 {!session.settings?.sourceId ? (
                   <div className="empty-state">
                     <h2>Let’s set your rotation.</h2>
@@ -940,7 +1222,13 @@ export default function App() {
                       </div>
                       <div className="track-panel">
                         <p className="eyebrow now-label">
-                          ▮▮▮ &nbsp; Now playing · shuffled
+                          ▮▮▮ &nbsp;{" "}
+                          {playingIntent
+                            ? "Now playing"
+                            : pendingUri
+                              ? "Starting"
+                              : "Selected track"}{" "}
+                          · shuffled
                         </p>
                         <h2>
                           {current.spotifyUrl ? (
@@ -957,6 +1245,9 @@ export default function App() {
                         </h2>
                         <p className="artist">{artist(current)}</p>
                         <p className="album">{current.album || "Spotify"}</p>
+                        <p className="device-context">
+                          Output: {selectedDevice?.name || "No device selected"}
+                        </p>
                         <div className="transport">
                           <button
                             aria-label="Previous track"
@@ -969,7 +1260,7 @@ export default function App() {
                             className="play-button"
                             aria-label={playingIntent ? "Pause" : "Play"}
                             onClick={() => void togglePlayback()}
-                            disabled={busy || phase === "premium"}
+                            disabled={busy || !canPlay || !!pendingUri}
                           >
                             {playingIntent ? "Ⅱ" : "▶"}
                           </button>
@@ -990,21 +1281,25 @@ export default function App() {
                             onChange={(e) =>
                               setSeekValue(Number(e.target.value))
                             }
-                            onPointerUp={() => {
-                              if (seekValue !== null) {
-                                void player.current?.seek(seekValue);
-                                setPosition(seekValue);
-                                setSeekValue(null);
-                              }
+                            onPointerUp={(event) => {
+                              if (seekValue !== null)
+                                void run(() =>
+                                  seekTo(Number(event.currentTarget.value)),
+                                );
                             }}
-                            onKeyUp={() => {
-                              if (seekValue !== null) {
-                                void player.current?.seek(seekValue);
-                                setPosition(seekValue);
-                                setSeekValue(null);
-                              }
+                            onKeyUp={(event) => {
+                              if (seekValue !== null)
+                                void run(() =>
+                                  seekTo(Number(event.currentTarget.value)),
+                                );
                             }}
-                            disabled={!canPlay || !duration}
+                            disabled={
+                              !canPlay ||
+                              !duration ||
+                              playback?.uri !== current.uri ||
+                              !!pendingUri ||
+                              busy
+                            }
                             aria-label="Seek within track"
                             style={
                               {
@@ -1022,21 +1317,18 @@ export default function App() {
                           role="status"
                           aria-live="polite"
                         >
-                          {phase === "connecting"
-                            ? "Connecting Spotify player…"
-                            : phase === "premium" || phase === "error"
-                              ? playerMessage
-                              : phase === "ready"
-                                ? "Ready. Start listening when you are ready."
-                                : ""}
+                          {playerMessage ||
+                            (canPlay
+                              ? `Ready on ${selectedDevice?.name}. Press Play to listen.`
+                              : "Choose a Spotify device to listen.")}
                         </div>
-                        {["ready", "connecting", "error"].includes(phase) && (
+                        {canPlay && !playingIntent && !pendingUri && (
                           <button
                             className="secondary-button start-button"
                             onClick={() => void start()}
-                            disabled={busy || !deviceId}
+                            disabled={busy}
                           >
-                            Start listening
+                            Play on {selectedDevice?.name}
                           </button>
                         )}
                         <div className="remove-area">
