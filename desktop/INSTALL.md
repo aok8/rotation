@@ -4,7 +4,7 @@ The desktop edition runs the same small Node server on `127.0.0.1:3000` and open
 
 ## Install and launch
 
-1. Download the archive for your operating system and CPU from a successful **Desktop packages** run in the repository's GitHub Actions tab, then extract it to a folder you will keep. Artifacts from pull requests are test builds and expire after 30 days.
+1. Open a successful **Desktop packages** run in the repository's GitHub Actions tab and download the artifact for your operating system and CPU. GitHub downloads an outer ZIP containing `rotation-<platform>.zip` or `rotation-<platform>.tar.gz`; extract the outer ZIP and then the inner archive into a folder you will keep. Pull request artifacts are test builds and expire after 30 days.
 2. Add **`http://127.0.0.1:3000/auth/callback`** as an exact redirect URI in your Spotify Developer Dashboard app.
 3. Launch the app:
    - **Windows x64:** double-click `Launch Rotation.vbs` for a hidden console. If Windows Script Host is disabled, use `Launch Rotation.cmd`; keep its console open while listening.
