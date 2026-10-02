@@ -11,3 +11,4 @@ data/
 coverage/
 *.log
 .DS_Store
+dist-desktop/

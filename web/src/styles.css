@@ -140,6 +140,19 @@ p {
 .theme-button span {
   font-size: 18px;
 }
+.quit-button {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 99px;
+  min-height: 40px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.quit-button:hover:not(:disabled) {
+  background: var(--soft);
+}
 .eyebrow {
   text-transform: uppercase;
   letter-spacing: 0.16em;
