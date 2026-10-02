@@ -117,7 +117,7 @@ function respond(res, status, body, contentType = "text/html; charset=utf-8") {
     "Content-Type": contentType,
     "Cache-Control": "no-store",
     "X-Content-Type-Options": "nosniff",
-    "Referrer-Policy": "no-referrer",
+    "Referrer-Policy": "same-origin",
     "Content-Security-Policy":
       "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
   });

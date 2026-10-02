@@ -61,6 +61,7 @@ try {
     try {
       const page = await fetch(setup.url);
       assert.equal(page.status, 200);
+      assert.equal(page.headers.get("referrer-policy"), "same-origin");
       const html = await page.text();
       assert.match(html, new RegExp(`127\\.0\\.0\\.1:${port}/auth/callback`));
       const cookie = page.headers.get("set-cookie").split(";")[0];
@@ -76,6 +77,12 @@ try {
         body,
       });
       assert.equal(denied.status, 403);
+      const opaque = await fetch(`${setup.url}/save`, {
+        method: "POST",
+        headers: { Cookie: cookie, Origin: "null" },
+        body,
+      });
+      assert.equal(opaque.status, 403);
       assert.equal(await readConfig(configDir), null);
       const saved = await fetch(`${setup.url}/save`, {
         method: "POST",

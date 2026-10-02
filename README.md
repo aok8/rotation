@@ -29,6 +29,7 @@ Replacing the extracted app folder updates the program without deleting your sav
 | Symptom | Check |
 | --- | --- |
 | Redirect mismatch | Dashboard URI must be exactly `http://127.0.0.1:3000/auth/callback` for the default port. Use `127.0.0.1`, not `localhost`. |
+| Setup says “Refresh setup and try again” after saving credentials | Update to a package built after the Windows setup form fix, then reopen setup and submit again. Older packages could send a browser form request with `Origin: null`. |
 | Spotify login refused | Confirm Developer Dashboard access, app owner eligibility, and current Development Mode limits. |
 | Browser player unavailable | Confirm Premium, a supported browser, a user gesture to start, and any SDK error shown in the app. |
 | Playlist cannot be edited | Confirm the account can edit it and granted the playlist modify scope. |
