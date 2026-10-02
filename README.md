@@ -19,6 +19,12 @@ Spotify's current Development Mode access and limits can change. Check the [Spot
 
 Generate a session secret with `openssl rand -hex 32`. Do not commit `.env`, copy its values into issues, or put credentials in URLs.
 
+## Run as a local desktop app
+
+Rotation can run only while you are using it. Download the package for your operating system from the **Desktop packages** GitHub Actions artifacts and follow [desktop/INSTALL.md](desktop/INSTALL.md). The launcher opens your normal browser at `http://127.0.0.1:3000`, so Spotify can return to the registered loopback callback without a domain, HTTPS certificate, NAS, or Docker. On first launch, enter your Spotify Developer app Client ID and Client Secret in the local setup page. The package contains neither credential; both stay in your user profile. Use **Quit rotation** in the app when finished.
+
+The CI workflow builds Linux x64/arm64, Windows x64, and macOS Intel/Apple Silicon packages on their respective operating systems. See [desktop release checks](docs/desktop-qa.md) for verification status and limits. The original Docker deployment remains available below.
+
 ## Run with Docker Compose
 
 ```sh
