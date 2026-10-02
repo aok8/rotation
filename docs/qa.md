@@ -2,7 +2,7 @@
 
 The build and type checks can run without Spotify. Live checks require the owner's Premium account, a configured Developer app, and an isolated pair of playlists so edits do not affect personal playlists. Live checks on 2026-10-01 verified Spotify sign-in, loading a 402-item playlist, audible browser playback, advancing progress, and pause/resume controls. The remaining matrix rows are release checks, not claimed results. Changes made outside this app may not immediately appear in its player controls.
 
-## Automated and container checks
+## Automated and desktop checks
 
 ```sh
 npm --prefix server ci
@@ -14,9 +14,9 @@ npm --prefix server run build
 npm --prefix web run build
 ```
 
-On a machine with Docker, run `docker compose config`, `docker compose build`, `docker compose up -d`, and `docker compose ps`. Check that the service becomes healthy, `GET /health` returns only `{ "ok": true }`, and unauthenticated `/api/playlists` returns 401. Inspect the final image user and installed files; the runtime should use `node`, contain built artifacts and production dependencies, and exclude `.env`, source, and build tools. Confirm a restart retains connection/settings and `docker compose down` retains the volume.
+Run the launcher and package checks from [desktop release checks](desktop-qa.md). They cover first-run secret generation, per-user paths, loopback binding, the exact Spotify callback, protected Quit, payload inspection, and package startup/shutdown. The staged package smoke test uses fake credentials and no Spotify connection.
 
-Docker smoke test on 2026-10-01 (CachyOS, Docker 29.8.2, Compose 5.5.1): `docker compose config --quiet` and `docker compose build` passed. The non-root container became healthy; `/health` and `/` returned 200, unauthenticated `/api/playlists` returned 401, and `/auth/start` returned 302. The image contained the built web and server files while excluding `.env`, source, and the TypeScript build tool. A test file in the named volume survived both `docker compose restart` and `docker compose down` / `up`. One idle sample was 0.01% CPU and 32.72 MiB memory. Live Spotify sign-in and the Compose Watch rebuild path remain untested in the container.
+Current evidence on 2026-10-01: server integration tests, desktop runtime tests, typecheck, and server/web builds passed. A local launcher smoke run with fake credentials on CachyOS (Arch-derived) confirmed a `127.0.0.1` listening socket, minimal `/health`, and clean unauthenticated Quit. [Desktop packages workflow run 36948772439](https://github.com/aok8/rotation/actions/runs/36948772439) passed package builds, bundled-runtime smoke tests, and payload checks for Linux x64/arm64, Windows x64, and macOS x64/arm64. A locally built Linux x64 package passed the packaged runtime smoke script inside an official Arch Linux 2026.10.01 bootstrap root filesystem. Manual downloaded-package installation, browser launch, and live Spotify checks on Windows, macOS, and Arch Linux remain pending in [the desktop matrix](desktop-qa.md).
 
 ## Live Spotify matrix
 

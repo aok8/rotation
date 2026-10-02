@@ -1,21 +1,11 @@
-# Local desktop launcher
+# rotation desktop
 
-Run the built app with Node.js 24 or newer:
+rotation runs locally on your computer and opens in your default browser. It does not install a background service or a separate music player window. Spotify provides the music, and Spotify Premium is required for browser playback.
 
-```sh
-npm --prefix server ci
-npm --prefix web ci
-npm --prefix server run build
-npm --prefix web run build
-node desktop/launcher.mjs
-```
+Get the package for your operating system from a successful **Desktop packages** run in the repository's GitHub Actions tab, then follow [the installation guide](INSTALL.md). The Linux packages target **Arch Linux** on x64 and arm64; other distributions are best effort. Windows x64 and macOS Apple Silicon and Intel packages are also available.
 
-The first launch opens a setup page on `http://127.0.0.1:3000`. Enter your Spotify Developer app's Client ID and Client Secret there. Register **exactly** `http://127.0.0.1:3000/auth/callback` in Spotify's dashboard first. The setup page generates a random session secret locally. The launcher then starts the existing server on loopback and opens the default system browser. Spotify playback stays in that browser.
+Before first launch, add **`http://127.0.0.1:3000/auth/callback`** as an exact redirect URI in your Spotify Developer Dashboard app. The first-run page asks for that app's Client ID and Client Secret. rotation saves them in your user profile, outside the extracted package, and then opens Spotify sign-in in your browser.
 
-The launcher stores credentials in a per-user `config.json` and the encrypted Spotify session in a separate per-user data directory. Neither file belongs in a distributable package. On Linux the defaults are `~/.config/rotation` and `~/.local/share/rotation`; XDG variables are respected. On macOS both live below `~/Library/Application Support/Rotation`. On Windows configuration uses `%APPDATA%\Rotation` and data uses `%LOCALAPPDATA%\Rotation\data`. POSIX directories and the config file are restricted to the user. Protect the Windows user profile with normal account permissions. Back up the config and data together: losing the session secret makes the encrypted data unreadable.
+Use **Quit rotation** in the browser to stop the local app. Closing the browser tab leaves it running; reopen `http://127.0.0.1:3000` to reach Quit. Launch rotation again when you want to listen. It does not start automatically with your computer.
 
-Use **Quit rotation** in the app or setup page to stop the local server. Closing a browser tab leaves the launcher running; reopening the launcher opens the existing instance. Ctrl+C or a normal process termination also stops the server gracefully. If port 3000 is occupied by another application, close it or choose a different port and register the matching callback URI in Spotify.
-
-The package layout is `desktop/launcher.mjs`, `desktop/runtime.mjs`, `server/dist/index.js`, `server/node_modules/` (production dependencies), and `web/dist/`. Packaging may include a private Node runtime and set `ROTATION_NODE_BIN` to its executable. It must exclude `.env`, `config.json`, session data, and real credentials.
-
-For automated checks, use `node --test desktop/test/*.test.mjs`. The launcher supports `--no-open`, `--port N`, `--config-dir PATH`, `--data-dir PATH`, and `--app-root PATH`. `--port 0` chooses a free ephemeral port for local smoke tests; Spotify sign-in requires a fixed port registered in the dashboard. The test runner can create a temporary `config.json` with fake credentials to skip interactive setup. The launcher always binds the server to `127.0.0.1` regardless of these options.
+Your saved connection and playlist settings stay in your user profile when you replace the app package. The [installation guide](INSTALL.md) lists the data locations and platform-specific launch steps.
