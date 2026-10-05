@@ -35,6 +35,7 @@ Replacing the extracted app folder updates the program without deleting your sav
 | Spotify login refused | Confirm Developer Dashboard access, app owner eligibility, and current Development Mode limits. |
 | No Spotify device appears or Play/Next are grey | Open Spotify on the intended device, make sure it is online and signed into the same Premium account, start playback there, then return to Rotation or refresh the device list. Check the picker message for a restricted device. Some device models may not appear through Spotify's API. |
 | Device will not play | Confirm Premium and choose a device that is available and unrestricted. If it disappeared, refresh the device list. |
+| Mac app does not open a browser tab | Open `http://127.0.0.1:3000` manually. It should show Rotation or the first-run setup page. If the connection is refused, run the app's `Contents/MacOS/Rotation` executable from Terminal and note any error without sharing Spotify credentials. |
 | Playlist cannot be edited | Confirm the account can edit it and granted the playlist modify scope. |
 | Port 3000 is in use | Reopen the existing Rotation tab or quit the other process using that port. |
 | Settings disappear after restart | Check the user profile data directories and whether the config's session secret changed. |

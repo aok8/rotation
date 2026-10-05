@@ -67,6 +67,12 @@ jobs:
         run: node scripts/check-desktop-payload.mjs dist-desktop/${{ matrix.platform == 'darwin' && 'Rotation.app' || 'Rotation' }}
       - name: Smoke test packaged runtime
         run: node scripts/smoke-desktop.mjs dist-desktop/${{ matrix.platform == 'darwin' && 'Rotation.app' || 'Rotation' }}
+      - name: Smoke test macOS Launch Services
+        if: matrix.platform == 'darwin'
+        run: node scripts/smoke-macos-launch-services.mjs dist-desktop/Rotation.app
+      - name: Smoke test macOS first-run setup
+        if: matrix.platform == 'darwin'
+        run: node scripts/smoke-macos-first-run.mjs dist-desktop/Rotation.app
       - name: Archive Linux package
         if: matrix.platform == 'linux'
         shell: bash

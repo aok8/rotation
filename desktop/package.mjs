@@ -22,6 +22,7 @@ const required = [
   'server/node_modules/fastify/package.json',
   'server/package.json',
   'web/dist/index.html',
+  ...(platform === 'darwin' ? ['desktop/macos/RotationLauncher.swift'] : []),
 ];
 for (const path of required) {
   const fullPath = join(projectRoot, path);
@@ -66,12 +67,15 @@ See https://github.com/aok8/rotation for full documentation.
 `;
 if (platform === 'darwin') {
   await mkdir(join(output, 'Contents', 'MacOS'), { recursive: true });
-  const macLauncher = `#!/bin/sh
-set -eu
-ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/../Resources/Rotation" && pwd)"
-exec "$ROOT/runtime/node" "$ROOT/desktop/launcher.mjs" --app-root "$ROOT" "$@"
-`;
-  await writeFile(join(output, 'Contents', 'MacOS', 'Rotation'), macLauncher, { mode: 0o755 });
+  const macExecutable = join(output, 'Contents', 'MacOS', 'Rotation');
+  execFileSync('xcrun', [
+    'swiftc',
+    '-O',
+    '-target', `${arch}-apple-macos12.0`,
+    join(projectRoot, 'desktop/macos/RotationLauncher.swift'),
+    '-o', macExecutable,
+  ], { stdio: 'inherit' });
+  await chmod(macExecutable, 0o755);
   await writeFile(join(output, 'Contents', 'Info.plist'), `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict><key>CFBundleName</key><string>rotation</string><key>CFBundleDisplayName</key><string>rotation</string><key>CFBundleIdentifier</key><string>app.rotation.desktop</string><key>CFBundleVersion</key><string>0.1.0</string><key>CFBundleShortVersionString</key><string>0.1.0</string><key>CFBundleExecutable</key><string>Rotation</string><key>CFBundlePackageType</key><string>APPL</string><key>LSMinimumSystemVersion</key><string>12.0</string><key>LSUIElement</key><true/></dict></plist>
@@ -133,4 +137,11 @@ const manifest = {
   files: ['desktop/launcher.mjs', 'desktop/runtime.mjs', 'server/dist', 'server/node_modules', 'server/package.json', 'web/dist', `runtime/${runtimeName}`],
 };
 await writeFile(join(appRoot, 'build-manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
+if (platform === 'darwin') {
+  const sign = (path) => execFileSync('codesign', ['--force', '--sign', '-', path], { stdio: 'inherit' });
+  sign(join(appRoot, 'runtime', 'node'));
+  sign(join(output, 'Contents', 'MacOS', 'Rotation'));
+  sign(output);
+  execFileSync('codesign', ['--verify', '--deep', '--strict', '--verbose=2', output], { stdio: 'inherit' });
+}
 console.log(`Staged ${platform}/${arch} package at ${output}`);
