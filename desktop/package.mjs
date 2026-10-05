@@ -71,7 +71,7 @@ if (platform === 'darwin') {
   execFileSync('xcrun', [
     'swiftc',
     '-O',
-    '-target', `${arch}-apple-macos12.0`,
+    '-target', `${arch === 'x64' ? 'x86_64' : arch}-apple-macos12.0`,
     join(projectRoot, 'desktop/macos/RotationLauncher.swift'),
     '-o', macExecutable,
   ], { stdio: 'inherit' });
