@@ -82,6 +82,10 @@ final class RotationLauncher: NSObject, NSApplicationDelegate {
     }
 
     private func showAlert(title: String, message: String) {
+        if noOpen {
+            FileHandle.standardError.write(Data("\(title): \(message)\n".utf8))
+            return
+        }
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.alertStyle = .warning
