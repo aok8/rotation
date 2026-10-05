@@ -12,7 +12,11 @@ import {
   type Session,
   type TrackItem,
 } from "./api";
-import { classifyRemotePlayback } from "./connect-state";
+import {
+  classifyRemotePlayback,
+  findForwardMatch,
+  pendingPlaybackStatus,
+} from "./connect-state";
 
 type Notice = { text: string; kind: "ok" | "error" | "info" } | null;
 const formatTime = (ms = 0) => {
@@ -35,6 +39,7 @@ const initialTheme = (): "light" | "dark" => {
 };
 const resultRotation = (result: Rotation | { rotation: Rotation }) =>
   "rotation" in result ? result.rotation : result;
+const playbackTimeout = () => AbortSignal.timeout(30_000);
 
 function Picker({
   label,
@@ -138,6 +143,9 @@ export default function App() {
   const refreshingQueueRef = useRef(false);
   const pollingRef = useRef(false);
   const nextPollAllowedRef = useRef(0);
+  const lastObservedAtRef = useRef(0);
+  const lastDeviceRefreshAtRef = useRef(0);
+  const deviceRefreshInFlightRef = useRef(false);
   const pollRef = useRef<() => Promise<void>>(async () => {});
   const command = useRef(false);
   const rotationRef = useRef<Rotation | null>(null);
@@ -239,6 +247,9 @@ export default function App() {
       void loadRotation();
   }, [session?.authenticated, loadRotation]);
   const loadDevices = useCallback(async () => {
+    if (deviceRefreshInFlightRef.current) return;
+    deviceRefreshInFlightRef.current = true;
+    lastDeviceRefreshAtRef.current = Date.now();
     setDevicesLoading(true);
     setDeviceError("");
     setReauthorizationNeeded(false);
@@ -246,16 +257,22 @@ export default function App() {
       const data = await api<{
         devices: ConnectDevice[];
         activeDeviceId: string | null;
-      }>("/api/playback/devices");
+      }>("/api/playback/devices", {
+        signal: AbortSignal.timeout(10_000),
+      });
       const available = data.devices.filter(
         (device) => device.id && !device.isRestricted,
       );
       const saved = sessionStorage.getItem("rotation-connect-device");
       const previous = deviceIdRef.current;
       const chosen =
-        [previous, saved, data.activeDeviceId].find((id) =>
-          available.some((device) => device.id === id),
-        ) || (available.length === 1 ? available[0].id! : "");
+        (previous
+          ? available.some((device) => device.id === previous)
+            ? previous
+            : ""
+          : [saved, data.activeDeviceId].find((id) =>
+              available.some((device) => device.id === id),
+            ) || (available.length === 1 ? available[0].id! : ""));
       setDevices(data.devices);
       setActiveDeviceId(data.activeDeviceId);
       setDeviceId(chosen);
@@ -267,6 +284,13 @@ export default function App() {
         setPendingUri("");
         pendingUriRef.current = "";
         queuedThroughRef.current = -1;
+        setPlayerMessage(
+          chosen
+            ? `Spotify device found: ${available.find((device) => device.id === chosen)?.name}. Press Play to listen.`
+            : previous
+              ? "The selected Spotify device is no longer available. Choose another device or refresh devices."
+              : "No available Spotify device yet. Open Spotify on a device, then refresh.",
+        );
       }
     } catch (error) {
       setDeviceError(describeError(error));
@@ -275,6 +299,7 @@ export default function App() {
       );
     } finally {
       setDevicesLoading(false);
+      deviceRefreshInFlightRef.current = false;
     }
   }, []);
   useEffect(() => {
@@ -330,18 +355,51 @@ export default function App() {
     if (command.current) return;
     command.current = true;
     setBusy(true);
+    if (page === "player")
+      setPlayerMessage("Working with Spotify. Playback controls will return when it responds…");
+    const waiting = window.setTimeout(() => {
+      if (page === "player")
+        setPlayerMessage("Waiting for Spotify to finish this action…");
+    }, 8_000);
     try {
       await task();
     } catch (error) {
       setNotice({ text: describeError(error), kind: "error" });
+      if (page === "player") setPlayerMessage(describeError(error));
     } finally {
+      window.clearTimeout(waiting);
       command.current = false;
       setBusy(false);
     }
   }
+  function expirePendingIfOverdue(startedAt = pendingSinceRef.current) {
+    if (
+      !pendingUriRef.current ||
+      pendingSinceRef.current !== startedAt ||
+      pendingPlaybackStatus(
+        null,
+        deviceIdRef.current,
+        pendingUriRef.current,
+        startedAt,
+        Date.now(),
+      ) !== "expired"
+    )
+      return false;
+    pendingUriRef.current = "";
+    setPendingUri("");
+    setIntent(false);
+    setPlayback(null);
+    setPosition(0);
+    positionRef.current = 0;
+    setPlayerMessage(
+      "Spotify did not confirm playback on this device. Refresh devices or press Play to retry; check Spotify if audio started elsewhere.",
+    );
+    return true;
+  }
   function markPending(item: TrackItem, startPosition = 0) {
     pendingUriRef.current = item.uri;
-    pendingSinceRef.current = Date.now();
+    const startedAt = Date.now();
+    pendingSinceRef.current = startedAt;
     setPendingUri(item.uri);
     setIntent(false);
     setPlayback({
@@ -357,6 +415,7 @@ export default function App() {
       `Starting on ${selectedDevice?.name || "Spotify device"}…`,
     );
     window.setTimeout(() => void pollRef.current(), 1_500);
+    window.setTimeout(() => expirePendingIfOverdue(startedAt), 20_100);
   }
   async function play(item: TrackItem, startPosition = 0) {
     if (!deviceIdRef.current)
@@ -365,6 +424,7 @@ export default function App() {
       "/api/playback",
       {
         method: "PUT",
+        signal: playbackTimeout(),
         body: JSON.stringify({
           deviceId: deviceIdRef.current,
           uri: item.uri,
@@ -381,6 +441,7 @@ export default function App() {
       await run(async () => {
         await api("/api/playback/control", {
           method: "PUT",
+          signal: playbackTimeout(),
           body: JSON.stringify({
             deviceId: deviceIdRef.current,
             action: "pause",
@@ -402,6 +463,7 @@ export default function App() {
       await run(async () => {
         await api("/api/playback/control", {
           method: "PUT",
+          signal: playbackTimeout(),
           body: JSON.stringify({
             deviceId: deviceIdRef.current,
             action: "resume",
@@ -432,6 +494,7 @@ export default function App() {
     ) {
       await api("/api/playback/control", {
         method: "PUT",
+        signal: playbackTimeout(),
         body: JSON.stringify({
           deviceId: deviceIdRef.current,
           action: "pause",
@@ -450,6 +513,7 @@ export default function App() {
     if (!deviceIdRef.current) throw new Error("Choose a Spotify device first.");
     await api("/api/playback/seek", {
       method: "PUT",
+      signal: playbackTimeout(),
       body: JSON.stringify({
         deviceId: deviceIdRef.current,
         positionMs: nextPosition,
@@ -474,9 +538,28 @@ export default function App() {
       try {
         updated = await api<Rotation>("/api/rotation/navigate", {
           method: "POST",
+          signal: playbackTimeout(),
           body: JSON.stringify({ direction, deviceId: deviceIdRef.current }),
         });
       } catch (error) {
+        if (
+          (error as Error).name === "TimeoutError" ||
+          (error as Error).name === "AbortError"
+        ) {
+          try {
+            const latest = await api<Rotation | null>("/api/rotation", {
+              signal: playbackTimeout(),
+            });
+            if (latest) {
+              rotationRef.current = latest;
+              setRotation(latest);
+              queuedThroughRef.current = latest.queuedWindow?.endIndex ?? -1;
+            }
+          } catch {
+            // The next visible playback poll can still recover the saved index.
+          }
+          window.setTimeout(() => void pollRef.current(), 0);
+        }
         if (automatic) {
           setIntent(false);
           setPlayerMessage(
@@ -491,10 +574,7 @@ export default function App() {
         (entry) => entry.key === updated.order[updated.currentIndex],
       );
       if (item) {
-        queuedThroughRef.current = Math.min(
-          updated.order.length - 1,
-          updated.currentIndex + 19,
-        );
+        queuedThroughRef.current = updated.queuedWindow?.endIndex ?? -1;
         markPending(item);
       } else {
         setIntent(false);
@@ -624,14 +704,25 @@ export default function App() {
     )
       return;
     let remote: ConnectPlayback;
+    const observationGap = lastObservedAtRef.current
+      ? Date.now() - lastObservedAtRef.current
+      : 0;
     try {
-      remote = await api<ConnectPlayback>("/api/playback/state");
+      remote = await api<ConnectPlayback>("/api/playback/state", {
+        signal: AbortSignal.timeout(10_000),
+      });
+      lastObservedAtRef.current = Date.now();
     } catch (error) {
       const apiError = error as ApiError;
       if (apiError.status === 429)
         nextPollAllowedRef.current =
           Date.now() + (apiError.retryAfter ?? 10) * 1_000;
-      setPlayerMessage(describeError(error));
+      if (!expirePendingIfOverdue())
+        setPlayerMessage(
+          pendingUriRef.current
+            ? `Still waiting for Spotify to confirm playback: ${describeError(error)}`
+            : describeError(error),
+        );
       return;
     }
     const active = rotationRef.current;
@@ -645,11 +736,14 @@ export default function App() {
     if (!currentItem) return;
 
     if (pendingUriRef.current) {
-      if (
-        remote.deviceId === deviceIdRef.current &&
-        remote.uri === pendingUriRef.current &&
-        remote.isPlaying
-      ) {
+      const pendingStatus = pendingPlaybackStatus(
+        remote,
+        deviceIdRef.current,
+        pendingUriRef.current,
+        pendingSinceRef.current,
+        Date.now(),
+      );
+      if (pendingStatus === "confirmed") {
         pendingUriRef.current = "";
         setPendingUri("");
         setPlayback(remote);
@@ -659,15 +753,29 @@ export default function App() {
         setPlayerMessage(
           `Playing on ${selectedDevice?.name || "Spotify device"}.`,
         );
-      } else if (Date.now() - pendingSinceRef.current >= 20_000) {
-        pendingUriRef.current = "";
-        setPendingUri("");
-        setIntent(false);
-        setPlayerMessage(
-          "Spotify has not confirmed playback on this device. Refresh devices or try Play again.",
-        );
+        return;
       }
-      return;
+      if (pendingStatus === "waiting") return;
+      pendingUriRef.current = "";
+      setPendingUri("");
+      if (!remote.isPlaying || remote.deviceId !== deviceIdRef.current) {
+        setIntent(false);
+        setPlayback(null);
+        setPosition(0);
+        positionRef.current = 0;
+        setPlayerMessage(
+          remote.deviceId && remote.deviceId !== deviceIdRef.current
+            ? "Spotify is playing on another device. Refresh devices and choose where to listen, or press Play to retry here."
+            : "Spotify did not confirm playback on this device. Refresh devices or press Play to retry.",
+        );
+        if (
+          remote.deviceId &&
+          remote.deviceId !== deviceIdRef.current &&
+          Date.now() - lastDeviceRefreshAtRef.current > 15_000
+        )
+          void loadDevices();
+        return;
+      }
     }
 
     const transition = classifyRemotePlayback(
@@ -679,6 +787,112 @@ export default function App() {
       currentItem.durationMs ?? 0,
       playingIntentRef.current,
     );
+    const byKey = new Map(active!.items.map((item) => [item.key, item.uri]));
+    const orderedUris = active!.order.map((key) => byKey.get(key) ?? "");
+    const savedWindow = active!.queuedWindow;
+    const queuedThroughIndex =
+      queuedThroughRef.current >= index
+        ? queuedThroughRef.current
+        : savedWindow?.deviceId === deviceIdRef.current &&
+            savedWindow.startIndex <= index
+          ? savedWindow.endIndex
+          : -1;
+    const forward =
+      remote.deviceId === deviceIdRef.current
+        ? findForwardMatch(
+            orderedUris,
+            index,
+            queuedThroughIndex,
+            remote.uri,
+          )
+        : { kind: "none" as const };
+    if (forward.kind === "match" && remote.uri) {
+      command.current = true;
+      setBusy(true);
+      setPlayerMessage("Catching up with Spotify playback…");
+      try {
+        const updated = await api<Rotation>("/api/rotation/sync", {
+          method: "POST",
+          signal: playbackTimeout(),
+          body: JSON.stringify({
+            targetIndex: forward.targetIndex,
+            deviceId: deviceIdRef.current,
+            uri: remote.uri,
+            queuedThroughIndex,
+          }),
+        });
+        rotationRef.current = updated;
+        setRotation(updated);
+        queuedThroughRef.current = queuedThroughIndex;
+        setPlayback(remote);
+        setPosition(remote.positionMs);
+        positionRef.current = remote.positionMs;
+        setIntent(remote.isPlaying);
+        setActiveDeviceId(remote.deviceId);
+        setPlayerMessage(
+          `Caught up after ${updated.currentIndex - index} track${updated.currentIndex - index === 1 ? "" : "s"} advanced on ${selectedDevice?.name || "Spotify device"}.`,
+        );
+        setNotice({
+          text: `Synced with Spotify after ${updated.currentIndex - index} track${updated.currentIndex - index === 1 ? "" : "s"} advanced.`,
+          kind: "info",
+        });
+        // Recheck promptly so a refreshed queue can be scheduled near its edge.
+        window.setTimeout(() => void pollRef.current(), 0);
+      } catch (error) {
+        let recovered = false;
+        if (
+          (error as Error).name === "TimeoutError" ||
+          (error as Error).name === "AbortError"
+        ) {
+          try {
+            const latest = await api<Rotation | null>("/api/rotation", {
+              signal: playbackTimeout(),
+            });
+            if (latest) {
+              rotationRef.current = latest;
+              setRotation(latest);
+              queuedThroughRef.current = latest.queuedWindow?.endIndex ?? -1;
+              recovered = latest.currentIndex === forward.targetIndex;
+            }
+          } catch {
+            // A later poll can still reconcile after the server responds.
+          }
+          window.setTimeout(() => void pollRef.current(), 0);
+        }
+        if (recovered) {
+          setPlayback(remote);
+          setPosition(remote.positionMs);
+          positionRef.current = remote.positionMs;
+          setIntent(remote.isPlaying);
+          setPlayerMessage("Spotify playback and rotation are synchronized.");
+          return;
+        }
+        setIntent(false);
+        setPlayerMessage(
+          `Spotify is ahead of this rotation, but it could not sync: ${describeError(error)} Press Play to return to this track.`,
+        );
+      } finally {
+        command.current = false;
+        setBusy(false);
+      }
+      return;
+    }
+    if (
+      forward.kind === "ambiguous" &&
+      (transition === "other-track" ||
+        (transition === "current-playing" &&
+          observationGap > 15_000 &&
+          remote.positionMs + 10_000 < positionRef.current))
+    ) {
+      setIntent(false);
+      setPlayback(remote);
+      setPosition(remote.positionMs);
+      positionRef.current = remote.positionMs;
+      setPlayerMessage(
+        "Spotify is playing a repeated track, so its place in the rotation is unclear. Press Play to return to the selected track.",
+      );
+      return;
+    }
     if (transition === "current-playing") {
       setPlayback(remote);
       setPosition(remote.positionMs);
@@ -688,9 +902,11 @@ export default function App() {
       setPlayerMessage(
         `Playing on ${selectedDevice?.name || "Spotify device"}.`,
       );
-      if (queuedThroughRef.current < 0) queuedThroughRef.current = index;
+      if (queuedThroughRef.current < index && queuedThroughIndex >= index)
+        queuedThroughRef.current = queuedThroughIndex;
       if (
         nextItem &&
+        queuedThroughRef.current >= index &&
         queuedThroughRef.current < active!.order.length - 1 &&
         index >= Math.max(0, queuedThroughRef.current - 2) &&
         !refreshingQueueRef.current
@@ -701,6 +917,7 @@ export default function App() {
             "/api/playback",
             {
               method: "PUT",
+              signal: playbackTimeout(),
               body: JSON.stringify({
                 deviceId: deviceIdRef.current,
                 uri: currentItem.uri,
@@ -726,12 +943,26 @@ export default function App() {
         `Paused on ${selectedDevice?.name || "Spotify device"}.`,
       );
     } else if (transition === "expected-next") {
+      if (nextItem?.uri !== currentItem.uri || queuedThroughIndex < index + 1) {
+        setIntent(false);
+        setPlayback(remote);
+        setPosition(remote.positionMs);
+        positionRef.current = remote.positionMs;
+        setPlayerMessage(
+          "Spotify advanced, but the saved queue cannot confirm its place. Press Play to return to the selected track.",
+        );
+        return;
+      }
+      // An adjacent duplicate has the same URI. A near-end backward position
+      // jump proves exactly one step, although URI-only server sync cannot.
       if (command.current) return;
       command.current = true;
       setBusy(true);
+      setPlayerMessage("Syncing to the next repeated track…");
       try {
         const updated = await api<Rotation>("/api/rotation/navigate", {
           method: "POST",
+          signal: playbackTimeout(),
           body: JSON.stringify({ direction: "next" }),
         });
         const selected = updated.items.find(
@@ -769,11 +1000,16 @@ export default function App() {
       positionRef.current = 0;
       setPlayerMessage(
         transition === "other-device"
-          ? "Playback moved to another Spotify device. Choose that device and press Play to return to your rotation."
+          ? "Playback moved to another Spotify device. Refresh devices, choose where to listen, then press Play."
           : transition === "other-track"
             ? "Spotify continued to a track outside this rotation. Pause it in Spotify, or press Play to return to your rotation."
             : "No playback is active on the selected device. Press Play to start listening.",
       );
+      if (
+        transition === "other-device" &&
+        Date.now() - lastDeviceRefreshAtRef.current > 15_000
+      )
+        void loadDevices();
     }
   }
   async function refreshPlayback() {
@@ -846,21 +1082,41 @@ export default function App() {
   const duration = playback?.durationMs || current?.durationMs || 0;
   const progress = seekValue ?? position;
   useEffect(() => {
-    if (!session?.authenticated || !deviceId || page !== "player") return;
-    const poll = () => {
-      if (document.visibilityState === "visible") void pollRef.current();
+    if (!session?.authenticated || page !== "player") return;
+    const poll = (waking = false) => {
+      expirePendingIfOverdue();
+      if (document.visibilityState !== "visible") return;
+      const gap = lastObservedAtRef.current
+        ? Date.now() - lastObservedAtRef.current
+        : 0;
+      const shouldRefreshDevices =
+        (!deviceIdRef.current || (waking && gap > 20_000)) &&
+        Date.now() - lastDeviceRefreshAtRef.current >
+          (waking ? 5_000 : 30_000);
+      if (shouldRefreshDevices) {
+        void loadDevices().then(() => void pollRef.current());
+      } else if (deviceIdRef.current) {
+        if (waking && gap > 20_000)
+          setPlayerMessage("Checking Spotify playback after your return…");
+        void pollRef.current();
+      }
     };
     poll();
     const interval = window.setInterval(
-      poll,
-      pendingUri ? 3_000 : playingIntent ? 5_000 : 15_000,
+      () => poll(),
+      !deviceId ? 30_000 : pendingUri ? 3_000 : playingIntent ? 5_000 : 15_000,
     );
-    document.addEventListener("visibilitychange", poll);
+    const onWake = () => poll(true);
+    document.addEventListener("visibilitychange", onWake);
+    window.addEventListener("focus", onWake);
+    window.addEventListener("pageshow", onWake);
     return () => {
       window.clearInterval(interval);
-      document.removeEventListener("visibilitychange", poll);
+      document.removeEventListener("visibilitychange", onWake);
+      window.removeEventListener("focus", onWake);
+      window.removeEventListener("pageshow", onWake);
     };
-  }, [session?.authenticated, deviceId, page, playingIntent, pendingUri]);
+  }, [session?.authenticated, deviceId, page, playingIntent, pendingUri, loadDevices]);
   return (
     <div className="app">
       <header className="header wrap">

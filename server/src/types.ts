@@ -16,6 +16,7 @@ export interface Rotation {
   snapshotId: string;
   source: Playlist;
   archive: Playlist | null;
+  queuedWindow?: { startIndex: number; endIndex: number; deviceId: string };
 }
 export interface Playlist {
   id: string;

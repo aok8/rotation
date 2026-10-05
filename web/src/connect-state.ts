@@ -9,6 +9,48 @@ export type RemoteTransition =
   | "other-track"
   | "idle";
 
+export type ForwardMatch =
+  | { kind: "match"; targetIndex: number }
+  | { kind: "ambiguous" }
+  | { kind: "none" };
+
+export function pendingPlaybackStatus(
+  remote: ConnectPlayback | null,
+  deviceId: string,
+  uri: string,
+  startedAt: number,
+  now: number,
+): "confirmed" | "waiting" | "expired" {
+  if (
+    remote?.deviceId === deviceId &&
+    remote.uri === uri &&
+    remote.isPlaying
+  )
+    return "confirmed";
+  return now - startedAt >= 20_000 ? "expired" : "waiting";
+}
+
+// Spotify queues at most twenty tracks from the selected item. A URI can
+// occur more than once in a playlist, so only a unique forward match is safe
+// to use when catching up after the browser was inactive.
+export function findForwardMatch(
+  uris: string[],
+  currentIndex: number,
+  queuedThroughIndex: number,
+  remoteUri: string | null,
+): ForwardMatch {
+  if (!remoteUri || currentIndex < 0) return { kind: "none" };
+  const last = Math.min(uris.length - 1, queuedThroughIndex);
+  const matches: number[] = [];
+  for (let index = currentIndex; index <= last; index += 1) {
+    if (uris[index] === remoteUri) matches.push(index);
+  }
+  if (matches.length > 1) return { kind: "ambiguous" };
+  if (matches.length === 1 && matches[0] > currentIndex)
+    return { kind: "match", targetIndex: matches[0] };
+  return { kind: "none" };
+}
+
 export function classifyRemotePlayback(
   remote: ConnectPlayback,
   selectedDeviceId: string,

@@ -11,6 +11,7 @@ import { sessionFrom, save } from "./store.js";
 import { allPlaylists, selected, loadItems, spotify } from "./spotify.js";
 import {
   deviceId,
+  deviceParameter,
   devices,
   playbackState,
   requireCurrentPlayback,
@@ -139,6 +140,7 @@ export function registerApiRoutes(app: FastifyInstance) {
       );
     const b = object(req.body);
     const r = rotation(s);
+    const startingIndex = r.currentIndex;
     let nextIndex: number;
     if (b.direction === "next")
       nextIndex = Math.min(r.currentIndex + 1, r.order.length);
@@ -159,7 +161,7 @@ export function registerApiRoutes(app: FastifyInstance) {
         )
           await playbackCommand(
             s,
-            `/me/player/pause?device_id=${encodeURIComponent(selectedDevice)}`,
+            `/me/player/pause${deviceParameter(selectedDevice)}`,
           );
         else if (state.uri || state.isPlaying)
           throw new AppError(
@@ -169,7 +171,81 @@ export function registerApiRoutes(app: FastifyInstance) {
           );
       }
     }
+    if (s.rotation !== r || r.currentIndex !== startingIndex)
+      throw new AppError(
+        "item_changed",
+        "Rotation changed while navigating. Refresh playback.",
+        409,
+      );
     r.currentIndex = nextIndex;
+    if (nextIndex >= r.order.length) r.queuedWindow = undefined;
+    save();
+    return r;
+  });
+  app.post("/api/rotation/sync", async (req) => {
+    const s = requireSession(req);
+    requireCsrf(req, s);
+    if (busy)
+      throw new AppError(
+        "operation_in_progress",
+        "A playlist change is already in progress.",
+        409,
+      );
+    const b = object(req.body);
+    const r = rotation(s);
+    const selectedDevice = deviceId(b.deviceId);
+    const target = b.targetIndex;
+    const suppliedEnd = b.queuedThroughIndex;
+    const window = r.queuedWindow;
+    if (
+      !Number.isInteger(target) ||
+      !Number.isInteger(suppliedEnd) ||
+      typeof b.uri !== "string" ||
+      !uriPattern.test(b.uri) ||
+      !window ||
+      window.deviceId !== selectedDevice ||
+      window.endIndex !== suppliedEnd ||
+      (target as number) <= r.currentIndex ||
+      (target as number) < window.startIndex ||
+      (target as number) > window.endIndex ||
+      (target as number) >= r.order.length
+    )
+      throw new AppError(
+        "sync_unavailable",
+        "Playback moved outside the saved queue. Press Play to return.",
+        409,
+      );
+    const byKey = new Map(r.items.map((item) => [item.key, item]));
+    const expectedKey = r.order[target as number];
+    const expectedUri = byKey.get(expectedKey)?.uri;
+    const candidates = r.order
+      .slice(r.currentIndex, window.endIndex + 1)
+      .map((key) => byKey.get(key)?.uri);
+    if (
+      expectedUri !== b.uri ||
+      candidates.some((uri) => !uri) ||
+      candidates.filter((uri) => uri === b.uri).length !== 1
+    )
+      throw new AppError(
+        "sync_ambiguous",
+        "Spotify's track cannot be matched uniquely to the queue. Press Play to return.",
+        409,
+      );
+    const startingIndex = r.currentIndex;
+    await requireDevice(s, selectedDevice);
+    await requireCurrentPlayback(s, selectedDevice, b.uri);
+    if (
+      s.rotation !== r ||
+      r.currentIndex !== startingIndex ||
+      r.order[target as number] !== expectedKey ||
+      r.queuedWindow !== window
+    )
+      throw new AppError(
+        "item_changed",
+        "Rotation changed while syncing. Refresh playback.",
+        409,
+      );
+    r.currentIndex = target as number;
     save();
     return r;
   });
@@ -244,6 +320,8 @@ export function registerApiRoutes(app: FastifyInstance) {
         save();
       }
       const result = await removeCore(s, op, r, item);
+      result.queuedWindow = undefined;
+      save();
       return { rotation: result, operationId: op.id };
     } catch (e) {
       if (
@@ -301,7 +379,10 @@ export function registerApiRoutes(app: FastifyInstance) {
       );
     busy = true;
     try {
-      return { rotation: await removeCore(s, op, r, item), operationId: op.id };
+      const result = await removeCore(s, op, r, item);
+      result.queuedWindow = undefined;
+      save();
+      return { rotation: result, operationId: op.id };
     } finally {
       busy = false;
     }
@@ -335,7 +416,7 @@ export function registerApiRoutes(app: FastifyInstance) {
     await requireCurrentPlayback(s, selectedDevice, item.uri);
     await playbackCommand(
       s,
-      `/me/player/seek?device_id=${encodeURIComponent(selectedDevice)}&position_ms=${b.positionMs}`,
+      `/me/player/seek?position_ms=${b.positionMs}${deviceParameter(selectedDevice, "&")}`,
     );
     return { ok: true };
   });
@@ -381,7 +462,7 @@ export function registerApiRoutes(app: FastifyInstance) {
     const command = b.action === "pause" ? "pause" : "play";
     await playbackCommand(
       s,
-      `/me/player/${command}?device_id=${encodeURIComponent(selectedDevice)}`,
+      `/me/player/${command}${deviceParameter(selectedDevice)}`,
     );
     return { ok: true };
   });

@@ -33,7 +33,7 @@ Replacing the extracted app folder updates the program without deleting your sav
 | Redirect mismatch | Dashboard URI must be exactly `http://127.0.0.1:3000/auth/callback` for the default port. Use `127.0.0.1`, not `localhost`. |
 | Setup says “Refresh setup and try again” after saving credentials | Update to a package built after the Windows setup form fix, then reopen setup and submit again. Older packages could send a browser form request with `Origin: null`. |
 | Spotify login refused | Confirm Developer Dashboard access, app owner eligibility, and current Development Mode limits. |
-| No Spotify device appears | Open Spotify on the intended device, make sure it is online and signed into the same account, then refresh the device list. Some device models may not appear through Spotify's API. |
+| No Spotify device appears or Play/Next are grey | Open Spotify on the intended device, make sure it is online and signed into the same Premium account, start playback there, then return to Rotation or refresh the device list. Check the picker message for a restricted device. Some device models may not appear through Spotify's API. |
 | Device will not play | Confirm Premium and choose a device that is available and unrestricted. If it disappeared, refresh the device list. |
 | Playlist cannot be edited | Confirm the account can edit it and granted the playlist modify scope. |
 | Port 3000 is in use | Reopen the existing Rotation tab or quit the other process using that port. |
