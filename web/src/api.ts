@@ -37,6 +37,7 @@ export type Rotation = {
   snapshotId?: string;
   source?: Playlist | string | null;
   archive?: Playlist | string | null;
+  queuedWindow?: { startIndex: number; endIndex: number; deviceId: string };
 };
 export type ConnectDevice = {
   id: string | null;
@@ -101,6 +102,8 @@ export async function api<T>(
 
 export function describeError(error: unknown) {
   const e = error as ApiError;
+  if (e?.name === "TimeoutError" || e?.name === "AbortError")
+    return "Spotify took too long to respond. Refresh playback, then try again.";
   if (e?.code === "reauthorization_required")
     return "Spotify needs updated playback permission. Reconnect your account to continue.";
   if (e?.status === 401)

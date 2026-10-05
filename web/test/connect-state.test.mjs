@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { classifyRemotePlayback } from "../src/connect-state.ts";
+import {
+  classifyRemotePlayback,
+  findForwardMatch,
+  pendingPlaybackStatus,
+} from "../src/connect-state.ts";
 
 const device = "desk";
 const current = "spotify:track:current";
@@ -52,5 +56,60 @@ test("duplicate URI requires a position reset near the boundary", () => {
   assert.equal(
     classify(state(current, true, 120_000), 178_000, current),
     "current-playing",
+  );
+});
+
+test("a unique queued track several positions ahead can catch up", () => {
+  assert.deepEqual(
+    findForwardMatch(["a", "b", "c", "d", "e"], 0, 4, "d"),
+    { kind: "match", targetIndex: 3 },
+  );
+  assert.deepEqual(
+    findForwardMatch(["a", "b", "c", "d", "e"], 0, 2, "d"),
+    { kind: "none" },
+  );
+});
+
+test("repeated URI in the queued window is ambiguous", () => {
+  assert.deepEqual(findForwardMatch(["a", "b", "c", "b"], 0, 3, "b"), {
+    kind: "ambiguous",
+  });
+  assert.deepEqual(findForwardMatch(["a", "b", "a"], 0, 2, "a"), {
+    kind: "ambiguous",
+  });
+  assert.deepEqual(findForwardMatch(["a", "b"], 0, 1, "a"), {
+    kind: "none",
+  });
+});
+
+test("pending playback expires even without a poll or with a different device", () => {
+  const startedAt = 1_000;
+  assert.equal(
+    pendingPlaybackStatus(null, device, current, startedAt, 20_999),
+    "waiting",
+  );
+  assert.equal(
+    pendingPlaybackStatus(null, device, current, startedAt, 21_000),
+    "expired",
+  );
+  assert.equal(
+    pendingPlaybackStatus(
+      state(current, true, 0, "another-device"),
+      device,
+      current,
+      startedAt,
+      21_000,
+    ),
+    "expired",
+  );
+  assert.equal(
+    pendingPlaybackStatus(
+      state(current, true),
+      device,
+      current,
+      startedAt,
+      21_000,
+    ),
+    "confirmed",
   );
 });

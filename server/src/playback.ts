@@ -1,8 +1,9 @@
 import { AppError } from "./errors.js";
 import { spotify } from "./spotify.js";
+import { save } from "./store.js";
 import type { Rotation, Session } from "./types.js";
 
-const deviceIdPattern = /^[A-Za-z0-9_-]{10,128}$/;
+export const ACTIVE_DEVICE = "active";
 
 export function requirePlaybackRead(s: Session) {
   if (!s.grantedScopes?.includes("user-read-playback-state"))
@@ -14,16 +15,38 @@ export function requirePlaybackRead(s: Session) {
 }
 
 export function deviceId(value: unknown): string {
-  if (typeof value !== "string" || !deviceIdPattern.test(value))
+  if (
+    typeof value !== "string" ||
+    !value ||
+    value.length > 256 ||
+    /[\u0000-\u001f\u007f]/.test(value)
+  )
     throw new AppError("invalid_playback", "Choose a connected player.");
   return value;
+}
+
+export function deviceParameter(selectedDevice: string, separator = "?") {
+  return selectedDevice === ACTIVE_DEVICE
+    ? ""
+    : `${separator}device_id=${encodeURIComponent(selectedDevice)}`;
 }
 
 export async function devices(s: Session) {
   requirePlaybackRead(s);
   const result = await spotify(s, "/me/player/devices");
-  const list = (result?.devices || []).map((x: any) => ({
-    id: typeof x.id === "string" ? x.id : null,
+  const raw = Array.isArray(result?.devices)
+    ? result.devices.filter((x: unknown) => x && typeof x === "object")
+    : [];
+  const active = raw.filter((x: any) => x?.is_active === true);
+  const list = raw.map((x: any) => ({
+    id:
+      typeof x.id === "string" && x.id !== ACTIVE_DEVICE
+        ? x.id
+        : active.length === 1 &&
+            x.is_active === true &&
+            x.is_restricted !== true
+          ? ACTIVE_DEVICE
+          : null,
     name: String(x.name || "Spotify device"),
     type: String(x.type || "Unknown"),
     isActive: x.is_active === true,
@@ -33,7 +56,10 @@ export async function devices(s: Session) {
   }));
   return {
     devices: list,
-    activeDeviceId: list.find((x: any) => x.isActive)?.id || null,
+    activeDeviceId:
+      active.length === 1
+        ? list.find((x: any) => x.isActive)?.id || null
+        : null,
   };
 }
 
@@ -41,6 +67,15 @@ export async function requireDevice(s: Session, wanted: string) {
   const { devices: list } = await devices(s);
   if (!list.length)
     throw new AppError("no_device", "Open Spotify on a playback device.", 409);
+  if (
+    wanted === ACTIVE_DEVICE &&
+    list.some((x: any) => x.isActive && x.id === null && x.isRestricted)
+  )
+    throw new AppError(
+      "restricted_device",
+      "This Spotify device does not accept playback commands.",
+      409,
+    );
   const found = list.find((x: any) => x.id === wanted);
   if (!found)
     throw new AppError(
@@ -68,7 +103,13 @@ export async function playbackState(s: Session) {
       isPlaying: false,
     };
   return {
-    deviceId: typeof state.device?.id === "string" ? state.device.id : null,
+    deviceId:
+      typeof state.device?.id === "string"
+        ? state.device.id
+        : state.device?.is_active === true &&
+            state.device?.is_restricted !== true
+          ? ACTIVE_DEVICE
+          : null,
     uri:
       state.currently_playing_type === "track" &&
       typeof state.item?.uri === "string"
@@ -122,6 +163,15 @@ export async function playWindow(
   positionMs?: number,
 ) {
   await requireDevice(s, selectedDevice);
+  if (selectedDevice === ACTIVE_DEVICE) {
+    const state = await playbackState(s);
+    if (state.deviceId !== ACTIVE_DEVICE && state.deviceId !== null)
+      throw new AppError(
+        "device_gone",
+        "The active Spotify device changed. Refresh devices and try again.",
+        409,
+      );
+  }
   const byKey = new Map(r.items.map((item) => [item.key, item]));
   const uris = r.order
     .slice(index, index + 20)
@@ -134,8 +184,15 @@ export async function playWindow(
   if (positionMs !== undefined) body.position_ms = positionMs;
   await playbackCommand(
     s,
-    `/me/player/play?device_id=${encodeURIComponent(selectedDevice)}`,
+    `/me/player/play${deviceParameter(selectedDevice)}`,
     body,
   );
-  return { ok: true, queuedThroughIndex: index + uris.length - 1 };
+  const queuedThroughIndex = index + uris.length - 1;
+  r.queuedWindow = {
+    startIndex: index,
+    endIndex: queuedThroughIndex,
+    deviceId: selectedDevice,
+  };
+  save();
+  return { ok: true, queuedThroughIndex };
 }

@@ -27,7 +27,12 @@ Current evidence on 2026-10-01: server integration tests, desktop runtime tests,
 | Source and archive selection | IDs persist across restart; equal IDs are rejected; None is allowed. |
 | Empty playlist; unavailable/local/episode entries | Empty state appears and unsupported entries do not crash the session. |
 | No devices; restricted or vanished device | Clear picker state and refresh guidance; no silent fallback to another device or browser audio. |
+| Spotify opens after Rotation | Returning to the Rotation tab refreshes the device list and enables controls when a controllable device appears. |
+| Active device has no Spotify device ID | An active, unrestricted device can receive commands through Spotify's active-device target; inactive or restricted devices without IDs remain unavailable. |
+| Selected Mac device but Play stays disabled on “Starting…” | A delayed playback-state response must not leave Play disabled indefinitely. After the confirmation window, show a recovery message and allow another attempt. Record whether audio started on the Mac. |
 | Premium device playback, pause/seek/previous/next | Commands target the selected Connect device; state follows Spotify's playback API; normal navigation never edits playlists. |
+| Return after Spotify advances one or several queued tracks while tab is hidden | Rotation catches up to the current track in the submitted queue without replaying it or editing playlists. Verify paused and playing states. |
+| Repeated URI in the queued window | Rotation avoids guessing which copy is playing and presents a recoverable mismatch. |
 | External device or track switch | Controls show the mismatch and do not claim Rotation is still playing its selected track. |
 | End of track and end of rotation | Advance through the stable order once; paused near the end never auto-advances; the last item stops cleanly. |
 | Queue-window boundary | At the end of a 20-track window, upcoming shuffle order is restored; check for an audible jump and avoid repeated refresh calls. |
