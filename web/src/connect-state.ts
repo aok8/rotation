@@ -14,6 +14,24 @@ export type ForwardMatch =
   | { kind: "ambiguous" }
   | { kind: "none" };
 
+export function navigationAvailable(
+  pendingUri: string,
+  commandInFlight: boolean,
+) {
+  return !pendingUri && !commandInFlight;
+}
+
+export function unconfirmedPlaybackMismatch(
+  remote: ConnectPlayback,
+  deviceId: string,
+  expectedUri: string,
+): "none" | "other-device" | "other-track" | "idle" {
+  if (remote.deviceId && remote.deviceId !== deviceId) return "other-device";
+  if (remote.uri && remote.uri !== expectedUri) return "other-track";
+  if (remote.deviceId === deviceId && remote.uri === expectedUri) return "none";
+  return "idle";
+}
+
 export function pendingPlaybackStatus(
   remote: ConnectPlayback | null,
   deviceId: string,

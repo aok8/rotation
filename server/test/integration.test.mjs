@@ -33,6 +33,7 @@ let deviceRestricted = false;
 let deviceAvailable = true;
 let deviceEntries = null;
 let failPlay = false;
+let activateOnTransfer = true;
 let userId = "user";
 const track = {
   type: "track",
@@ -83,10 +84,23 @@ globalThis.fetch = async (input, init = {}) => {
     return currentPlayback
       ? response(currentPlayback)
       : new Response(null, { status: 204 });
+  if (u.pathname === "/v1/me/player" && init.method === "PUT") {
+    const body = JSON.parse(init.body);
+    playbackCommands.push({ path: u.pathname, body });
+    if (activateOnTransfer) {
+      for (const entry of deviceEntries || [])
+        entry.is_active = entry.id === body.device_ids[0];
+      if (currentPlayback)
+        currentPlayback.device = { id: body.device_ids[0], is_active: true };
+    }
+    return new Response(null, { status: 204 });
+  }
   if (
     (u.pathname === "/v1/me/player/pause" ||
       u.pathname === "/v1/me/player/play" ||
-      u.pathname === "/v1/me/player/seek") &&
+      u.pathname === "/v1/me/player/seek" ||
+      u.pathname === "/v1/me/player/shuffle" ||
+      u.pathname === "/v1/me/player/repeat") &&
     init.method === "PUT"
   ) {
     if (u.pathname === "/v1/me/player/play" && failPlay) {
@@ -99,6 +113,10 @@ globalThis.fetch = async (input, init = {}) => {
       body: init.body ? JSON.parse(init.body) : null,
       positionMs: u.searchParams.get("position_ms"),
     });
+    if (u.pathname === "/v1/me/player/shuffle" && currentPlayback)
+      currentPlayback.shuffle_state = u.searchParams.get("state") === "true";
+    if (u.pathname === "/v1/me/player/repeat" && currentPlayback)
+      currentPlayback.repeat_state = u.searchParams.get("state");
     return new Response("device12345", {
       status: 200,
       headers: { "content-type": "text/plain" },
@@ -664,6 +682,7 @@ try {
         is_restricted: false,
       },
     ];
+    currentPlayback.device = { id: "mac:desktop/1", is_active: true };
     const opaqueIdPlay = await request(
       "/api/playback",
       "PUT",
@@ -685,6 +704,11 @@ try {
         is_restricted: false,
       },
     ];
+    currentPlayback.device = {
+      id: null,
+      is_active: true,
+      is_restricted: false,
+    };
 
     otherTracks = ["aaa111", "bbb222", "aaa111"].map((suffix) => ({
       ...track,
@@ -725,6 +749,114 @@ try {
       cookie,
     );
     assert.equal(ambiguous.body.error.code, "sync_ambiguous");
+  });
+  await test("inactive desktop device is activated and queue modes are cleared before play", async () => {
+    const cookie = `rotation_session=${store.session.id}.${(await import("../dist/store.js")).sign(store.session.id)}`;
+    const csrf = store.session.csrf;
+    const fresh = (
+      await request("/api/rotation/start", "POST", {}, csrf, cookie)
+    ).body;
+    const first = fresh.items.find((item) => item.key === fresh.order[0]);
+    deviceEntries = [
+      {
+        id: "desktop123",
+        name: "Desktop",
+        type: "Computer",
+        is_active: false,
+        is_restricted: false,
+      },
+      {
+        id: "phone123",
+        name: "Phone",
+        type: "Smartphone",
+        is_active: true,
+        is_restricted: false,
+      },
+    ];
+    currentPlayback = {
+      device: { id: "phone123", is_active: true },
+      currently_playing_type: "track",
+      item: track,
+      is_playing: false,
+      shuffle_state: true,
+      repeat_state: "context",
+    };
+    const before = playbackCommands.length;
+    const played = await request(
+      "/api/playback",
+      "PUT",
+      { deviceId: "desktop123", uri: first.uri },
+      csrf,
+      cookie,
+    );
+    assert.equal(played.status, 200);
+    assert.deepEqual(
+      playbackCommands.slice(before).map((command) => command.path),
+      [
+        "/v1/me/player",
+        "/v1/me/player/shuffle",
+        "/v1/me/player/repeat",
+        "/v1/me/player/play",
+      ],
+    );
+    assert.equal(deviceEntries[0].is_active, true);
+    assert.equal(currentPlayback.shuffle_state, false);
+    assert.equal(currentPlayback.repeat_state, "off");
+    store.session.grantedScopes = store.session.grantedScopes.filter(
+      (scope) => scope !== "user-modify-playback-state",
+    );
+    const denied = await request(
+      "/api/playback",
+      "PUT",
+      { deviceId: "desktop123", uri: first.uri },
+      csrf,
+      cookie,
+    );
+    assert.equal(denied.body.error.code, "reauthorization_required");
+    store.session.grantedScopes.push("user-modify-playback-state");
+    deviceEntries = null;
+  });
+  await test("unconfirmed device transfer never sends a play command", async () => {
+    const cookie = `rotation_session=${store.session.id}.${(await import("../dist/store.js")).sign(store.session.id)}`;
+    const r = store.session.rotation;
+    const item = r.items.find((x) => x.key === r.order[r.currentIndex]);
+    deviceEntries = [
+      {
+        id: "sleeping-desktop",
+        name: "Desktop",
+        type: "Computer",
+        is_active: false,
+        is_restricted: false,
+      },
+      {
+        id: "phone123",
+        name: "Phone",
+        type: "Smartphone",
+        is_active: true,
+        is_restricted: false,
+      },
+    ];
+    activateOnTransfer = false;
+    const before = playbackCommands.length;
+    try {
+      const result = await request(
+        "/api/playback",
+        "PUT",
+        { deviceId: "sleeping-desktop", uri: item.uri },
+        store.session.csrf,
+        cookie,
+      );
+      assert.equal(result.status, 409);
+      assert.equal(result.body.error.code, "device_activation_failed");
+      assert.deepEqual(
+        playbackCommands.slice(before).map((command) => command.path),
+        ["/v1/me/player"],
+      );
+      assert.equal(store.session.rotation.currentIndex, r.currentIndex);
+    } finally {
+      activateOnTransfer = true;
+      deviceEntries = null;
+    }
   });
   await test("OAuth reconnect requires new scope and preserves only same-account settings", async () => {
     store.session.grantedScopes = undefined;
