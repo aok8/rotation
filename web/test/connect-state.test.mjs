@@ -3,7 +3,9 @@ import test from "node:test";
 import {
   classifyRemotePlayback,
   findForwardMatch,
+  navigationAvailable,
   pendingPlaybackStatus,
+  unconfirmedPlaybackMismatch,
 } from "../src/connect-state.ts";
 
 const device = "desk";
@@ -103,6 +105,10 @@ test("pending playback expires even without a poll or with a different device", 
     "expired",
   );
   assert.equal(
+    pendingPlaybackStatus(state(next, true), device, current, startedAt, 21_000),
+    "expired",
+  );
+  assert.equal(
     pendingPlaybackStatus(
       state(current, true),
       device,
@@ -111,5 +117,42 @@ test("pending playback expires even without a poll or with a different device", 
       21_000,
     ),
     "confirmed",
+  );
+});
+
+test("navigation waits for Spotify confirmation, then unlocks", () => {
+  assert.equal(navigationAvailable(current, false), false);
+  assert.equal(navigationAvailable("", true), false);
+  assert.equal(navigationAvailable("", false), true);
+});
+
+test("an unconfirmed command never adopts another queued song", () => {
+  assert.equal(
+    unconfirmedPlaybackMismatch(state(next, true), device, current),
+    "other-track",
+  );
+  assert.equal(
+    unconfirmedPlaybackMismatch(state(current, true), device, current),
+    "none",
+  );
+  assert.equal(
+    unconfirmedPlaybackMismatch(state(next, true, 0, "phone"), device, current),
+    "other-device",
+  );
+  assert.equal(
+    unconfirmedPlaybackMismatch(state(null, false, 0, null), device, current),
+    "no-playback",
+  );
+  assert.equal(
+    unconfirmedPlaybackMismatch(state(current, true, 0, null), device, current),
+    "unknown-device",
+  );
+  assert.equal(
+    unconfirmedPlaybackMismatch(state(null, false), device, current),
+    "selected-idle",
+  );
+  assert.equal(
+    unconfirmedPlaybackMismatch(state(current, false), device, current),
+    "selected-paused",
   );
 });

@@ -15,7 +15,9 @@ import {
 import {
   classifyRemotePlayback,
   findForwardMatch,
+  navigationAvailable,
   pendingPlaybackStatus,
+  unconfirmedPlaybackMismatch,
 } from "./connect-state";
 
 type Notice = { text: string; kind: "ok" | "error" | "info" } | null;
@@ -40,6 +42,27 @@ const initialTheme = (): "light" | "dark" => {
 const resultRotation = (result: Rotation | { rotation: Rotation }) =>
   "rotation" in result ? result.rotation : result;
 const playbackTimeout = () => AbortSignal.timeout(30_000);
+function pendingRecoveryMessage(
+  mismatch: ReturnType<typeof unconfirmedPlaybackMismatch>,
+  deviceName: string,
+) {
+  switch (mismatch) {
+    case "other-device":
+      return "Spotify is playing on another device. Refresh devices, choose where to listen, then press Play to retry.";
+    case "unknown-device":
+      return "Spotify reports playback on a device it cannot identify. Refresh devices and choose an available player before retrying.";
+    case "other-track":
+      return "Spotify played a different song than Rotation selected. Check Shuffle and Repeat in Spotify, then press Play to return to the selected track.";
+    case "selected-paused":
+      return `Spotify found the selected song on ${deviceName}, but it is paused. Press Play to try again.`;
+    case "selected-idle":
+      return `Spotify sees ${deviceName}, but it is idle. Start any song in Spotify there once, then press Play in Rotation to retry.`;
+    case "no-playback":
+      return `Spotify reports no active playback on ${deviceName}. Start any song in Spotify there once, then press Play in Rotation to retry.`;
+    default:
+      return `Spotify has not confirmed playback on ${deviceName}. Press Play to retry.`;
+  }
+}
 
 function Picker({
   label,
@@ -138,6 +161,7 @@ export default function App() {
   const deviceIdRef = useRef("");
   const playingIntentRef = useRef(false);
   const pendingUriRef = useRef("");
+  const unconfirmedUriRef = useRef("");
   const pendingSinceRef = useRef(0);
   const queuedThroughRef = useRef(-1);
   const refreshingQueueRef = useRef(false);
@@ -229,6 +253,7 @@ export default function App() {
       setIntent(false);
       setPendingUri("");
       pendingUriRef.current = "";
+      unconfirmedUriRef.current = "";
       queuedThroughRef.current = -1;
     } catch (e) {
       setRotationError(describeError(e));
@@ -283,6 +308,7 @@ export default function App() {
         setPosition(0);
         setPendingUri("");
         pendingUriRef.current = "";
+        unconfirmedUriRef.current = "";
         queuedThroughRef.current = -1;
         setPlayerMessage(
           chosen
@@ -344,6 +370,7 @@ export default function App() {
     setPosition(0);
     setPendingUri("");
     pendingUriRef.current = "";
+    unconfirmedUriRef.current = "";
     queuedThroughRef.current = -1;
     setPlayerMessage(
       id
@@ -385,6 +412,7 @@ export default function App() {
       ) !== "expired"
     )
       return false;
+    unconfirmedUriRef.current = pendingUriRef.current;
     pendingUriRef.current = "";
     setPendingUri("");
     setIntent(false);
@@ -397,6 +425,7 @@ export default function App() {
     return true;
   }
   function markPending(item: TrackItem, startPosition = 0) {
+    unconfirmedUriRef.current = "";
     pendingUriRef.current = item.uri;
     const startedAt = Date.now();
     pendingSinceRef.current = startedAt;
@@ -412,7 +441,7 @@ export default function App() {
     setPosition(startPosition);
     positionRef.current = startPosition;
     setPlayerMessage(
-      `Starting on ${selectedDevice?.name || "Spotify device"}…`,
+      `Starting on ${selectedDevice?.name || "Spotify device"}… Next and Previous unlock when Spotify confirms playback.`,
     );
     window.setTimeout(() => void pollRef.current(), 1_500);
     window.setTimeout(() => expirePendingIfOverdue(startedAt), 20_100);
@@ -505,6 +534,7 @@ export default function App() {
     setIntent(false);
     setPendingUri("");
     pendingUriRef.current = "";
+    unconfirmedUriRef.current = "";
     setPlayback((previous) =>
       previous ? { ...previous, isPlaying: false } : previous,
     );
@@ -525,6 +555,13 @@ export default function App() {
     void pollRef.current();
   }
   async function navigate(direction: "next" | "previous", automatic = false) {
+    if (!navigationAvailable(pendingUriRef.current, command.current)) {
+      if (!automatic && pendingUriRef.current)
+        setPlayerMessage(
+          "Wait for Spotify to confirm this track before moving to another. If it does not start, Play will return shortly.",
+        );
+      return;
+    }
     await run(async () => {
       if (!deviceIdRef.current)
         throw new Error("Choose a Spotify device first.");
@@ -745,6 +782,7 @@ export default function App() {
       );
       if (pendingStatus === "confirmed") {
         pendingUriRef.current = "";
+        unconfirmedUriRef.current = "";
         setPendingUri("");
         setPlayback(remote);
         setPosition(remote.positionMs);
@@ -756,26 +794,55 @@ export default function App() {
         return;
       }
       if (pendingStatus === "waiting") return;
+      const expectedUri = pendingUriRef.current;
+      const mismatch = unconfirmedPlaybackMismatch(
+        remote,
+        deviceIdRef.current,
+        expectedUri,
+      );
+      unconfirmedUriRef.current = expectedUri;
       pendingUriRef.current = "";
       setPendingUri("");
-      if (!remote.isPlaying || remote.deviceId !== deviceIdRef.current) {
+      if (mismatch !== "none") {
         setIntent(false);
         setPlayback(null);
         setPosition(0);
         positionRef.current = 0;
         setPlayerMessage(
-          remote.deviceId && remote.deviceId !== deviceIdRef.current
-            ? "Spotify is playing on another device. Refresh devices and choose where to listen, or press Play to retry here."
-            : "Spotify did not confirm playback on this device. Refresh devices or press Play to retry.",
+          pendingRecoveryMessage(
+            mismatch,
+            selectedDevice?.name || "this device",
+          ),
         );
         if (
-          remote.deviceId &&
-          remote.deviceId !== deviceIdRef.current &&
+          (mismatch === "other-device" || mismatch === "unknown-device") &&
           Date.now() - lastDeviceRefreshAtRef.current > 15_000
         )
           void loadDevices();
         return;
       }
+    }
+
+    if (unconfirmedUriRef.current) {
+      const mismatch = unconfirmedPlaybackMismatch(
+        remote,
+        deviceIdRef.current,
+        unconfirmedUriRef.current,
+      );
+      if (mismatch !== "none") {
+        setIntent(false);
+        setPlayback(null);
+        setPosition(0);
+        positionRef.current = 0;
+        setPlayerMessage(
+          pendingRecoveryMessage(
+            mismatch,
+            selectedDevice?.name || "this device",
+          ),
+        );
+        return;
+      }
+      unconfirmedUriRef.current = "";
     }
 
     const transition = classifyRemotePlayback(
@@ -832,10 +899,6 @@ export default function App() {
         setPlayerMessage(
           `Caught up after ${updated.currentIndex - index} track${updated.currentIndex - index === 1 ? "" : "s"} advanced on ${selectedDevice?.name || "Spotify device"}.`,
         );
-        setNotice({
-          text: `Synced with Spotify after ${updated.currentIndex - index} track${updated.currentIndex - index === 1 ? "" : "s"} advanced.`,
-          kind: "info",
-        });
         // Recheck promptly so a refreshed queue can be scheduled near its edge.
         window.setTimeout(() => void pollRef.current(), 0);
       } catch (error) {
@@ -1508,7 +1571,7 @@ export default function App() {
                           <button
                             aria-label="Previous track"
                             onClick={() => void navigate("previous")}
-                            disabled={busy || !canPlay}
+                            disabled={!canPlay || !navigationAvailable(pendingUri, busy)}
                           >
                             ↶
                           </button>
@@ -1523,7 +1586,7 @@ export default function App() {
                           <button
                             aria-label="Next track"
                             onClick={() => void navigate("next")}
-                            disabled={busy || !canPlay}
+                            disabled={!canPlay || !navigationAvailable(pendingUri, busy)}
                           >
                             ↷
                           </button>
