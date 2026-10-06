@@ -133,6 +133,66 @@ export async function playbackState(s: Session) {
   };
 }
 
+// Safe to share when diagnosing a Spotify client that accepted a command but
+// did not begin playback. This deliberately omits device and track identifiers.
+export async function playbackDiagnostic(s: Session) {
+  requirePlaybackRead(s);
+  const r = s.rotation;
+  const window = r?.queuedWindow;
+  const expectedKey = r?.order[r.currentIndex];
+  const expectedUri = r?.items.find((item) => item.key === expectedKey)?.uri;
+  if (!window || !expectedUri) return { state: "no_queue" as const };
+  const raw = await spotify(s, "/me/player");
+  if (!raw)
+    return {
+      state: "no_playback" as const,
+      selectedDeviceActive: false,
+      shuffleOn: null,
+      repeatOn: null,
+      itemPlayable: null,
+      itemRestricted: null,
+      relinkedFromExpected: false,
+    };
+  const actualDevice =
+    typeof raw.device?.id === "string"
+      ? raw.device.id
+      : raw.device?.is_active === true && raw.device?.is_restricted !== true
+        ? ACTIVE_DEVICE
+        : null;
+  const selectedDeviceActive =
+    actualDevice === window.deviceId && raw.device?.is_active === true;
+  const actualUri =
+    raw.currently_playing_type === "track" && typeof raw.item?.uri === "string"
+      ? raw.item.uri
+      : null;
+  const queuedUris = r.order
+    .slice(r.currentIndex + 1, window.endIndex + 1)
+    .map((key) => r.items.find((item) => item.key === key)?.uri);
+  const state = !selectedDeviceActive
+    ? "other_device"
+    : actualUri === expectedUri
+      ? raw.is_playing === true
+        ? "expected_playing"
+        : "expected_paused"
+      : !actualUri
+        ? "selected_idle"
+        : queuedUris.includes(actualUri)
+          ? "other_queued_track"
+          : "wrong_track";
+  return {
+    state,
+    selectedDeviceActive,
+    shuffleOn:
+      typeof raw.shuffle_state === "boolean" ? raw.shuffle_state : null,
+    repeatOn:
+      typeof raw.repeat_state === "string" ? raw.repeat_state !== "off" : null,
+    itemPlayable:
+      typeof raw.item?.is_playable === "boolean" ? raw.item.is_playable : null,
+    itemRestricted: raw.item ? Boolean(raw.item.restrictions) : null,
+    relinkedFromExpected: raw.item?.linked_from?.uri === expectedUri,
+  };
+}
+
 export async function requireCurrentPlayback(
   s: Session,
   selectedDevice: string,

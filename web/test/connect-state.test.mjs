@@ -139,4 +139,20 @@ test("an unconfirmed command never adopts another queued song", () => {
     unconfirmedPlaybackMismatch(state(next, true, 0, "phone"), device, current),
     "other-device",
   );
+  assert.equal(
+    unconfirmedPlaybackMismatch(state(null, false, 0, null), device, current),
+    "no-playback",
+  );
+  assert.equal(
+    unconfirmedPlaybackMismatch(state(current, true, 0, null), device, current),
+    "unknown-device",
+  );
+  assert.equal(
+    unconfirmedPlaybackMismatch(state(null, false), device, current),
+    "selected-idle",
+  );
+  assert.equal(
+    unconfirmedPlaybackMismatch(state(current, false), device, current),
+    "selected-paused",
+  );
 });

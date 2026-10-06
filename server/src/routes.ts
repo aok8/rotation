@@ -13,6 +13,7 @@ import {
   deviceId,
   deviceParameter,
   devices,
+  playbackDiagnostic,
   playbackState,
   requireCurrentPlayback,
   requireDevice,
@@ -394,6 +395,10 @@ export function registerApiRoutes(app: FastifyInstance) {
   app.get("/api/playback/state", async (req, reply) => {
     reply.header("Cache-Control", "no-store");
     return playbackState(requireSession(req));
+  });
+  app.get("/api/playback/diagnostic", async (req, reply) => {
+    reply.header("Cache-Control", "no-store");
+    return playbackDiagnostic(requireSession(req));
   });
   app.put("/api/playback/seek", async (req) => {
     const s = requireSession(req);

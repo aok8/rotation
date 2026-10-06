@@ -42,6 +42,27 @@ const initialTheme = (): "light" | "dark" => {
 const resultRotation = (result: Rotation | { rotation: Rotation }) =>
   "rotation" in result ? result.rotation : result;
 const playbackTimeout = () => AbortSignal.timeout(30_000);
+function pendingRecoveryMessage(
+  mismatch: ReturnType<typeof unconfirmedPlaybackMismatch>,
+  deviceName: string,
+) {
+  switch (mismatch) {
+    case "other-device":
+      return "Spotify is playing on another device. Refresh devices, choose where to listen, then press Play to retry.";
+    case "unknown-device":
+      return "Spotify reports playback on a device it cannot identify. Refresh devices and choose an available player before retrying.";
+    case "other-track":
+      return "Spotify played a different song than Rotation selected. Check Shuffle and Repeat in Spotify, then press Play to return to the selected track.";
+    case "selected-paused":
+      return `Spotify found the selected song on ${deviceName}, but it is paused. Press Play to try again.`;
+    case "selected-idle":
+      return `${deviceName} is active in Spotify, but no song started. Open Spotify there, then press Play to retry.`;
+    case "no-playback":
+      return "Spotify reports no active playback. Open Spotify on the selected device, refresh devices, then press Play to retry.";
+    default:
+      return `Spotify has not confirmed playback on ${deviceName}. Press Play to retry.`;
+  }
+}
 
 function Picker({
   label,
@@ -774,28 +795,27 @@ export default function App() {
       }
       if (pendingStatus === "waiting") return;
       const expectedUri = pendingUriRef.current;
+      const mismatch = unconfirmedPlaybackMismatch(
+        remote,
+        deviceIdRef.current,
+        expectedUri,
+      );
       unconfirmedUriRef.current = expectedUri;
       pendingUriRef.current = "";
       setPendingUri("");
-      if (
-        !remote.isPlaying ||
-        remote.deviceId !== deviceIdRef.current ||
-        remote.uri !== expectedUri
-      ) {
+      if (mismatch !== "none") {
         setIntent(false);
         setPlayback(null);
         setPosition(0);
         positionRef.current = 0;
         setPlayerMessage(
-          remote.deviceId && remote.deviceId !== deviceIdRef.current
-            ? "Spotify is playing on another device. Refresh devices and choose where to listen, or press Play to retry here."
-            : remote.isPlaying && remote.uri !== expectedUri
-              ? "Spotify started a different song than Rotation selected. Check Shuffle and Repeat in Spotify, then press Play to return to the selected track."
-            : "Spotify did not confirm playback on this device. Refresh devices or press Play to retry.",
+          pendingRecoveryMessage(
+            mismatch,
+            selectedDevice?.name || "this device",
+          ),
         );
         if (
-          remote.deviceId &&
-          remote.deviceId !== deviceIdRef.current &&
+          (mismatch === "other-device" || mismatch === "unknown-device") &&
           Date.now() - lastDeviceRefreshAtRef.current > 15_000
         )
           void loadDevices();
@@ -815,11 +835,10 @@ export default function App() {
         setPosition(0);
         positionRef.current = 0;
         setPlayerMessage(
-          mismatch === "other-track"
-            ? "Spotify started a different song than Rotation selected. Check Shuffle and Repeat in Spotify, then press Play to return to the selected track."
-            : mismatch === "other-device"
-              ? "Playback moved to another Spotify device. Refresh devices, then press Play to return to the selected track."
-              : "Spotify did not confirm the selected track. Press Play to try again.",
+          pendingRecoveryMessage(
+            mismatch,
+            selectedDevice?.name || "this device",
+          ),
         );
         return;
       }
@@ -880,10 +899,6 @@ export default function App() {
         setPlayerMessage(
           `Caught up after ${updated.currentIndex - index} track${updated.currentIndex - index === 1 ? "" : "s"} advanced on ${selectedDevice?.name || "Spotify device"}.`,
         );
-        setNotice({
-          text: `Synced with Spotify after ${updated.currentIndex - index} track${updated.currentIndex - index === 1 ? "" : "s"} advanced.`,
-          kind: "info",
-        });
         // Recheck promptly so a refreshed queue can be scheduled near its edge.
         window.setTimeout(() => void pollRef.current(), 0);
       } catch (error) {

@@ -29,6 +29,7 @@ let snapshot = "snap-1";
 let otherTracks = null;
 const playbackCommands = [];
 let currentPlayback = null;
+let playbackStateReads = 0;
 let deviceRestricted = false;
 let deviceAvailable = true;
 let deviceEntries = null;
@@ -80,10 +81,12 @@ globalThis.fetch = async (input, init = {}) => {
             ]
           : []),
     });
-  if (u.pathname === "/v1/me/player" && init.method !== "PUT")
+  if (u.pathname === "/v1/me/player" && init.method !== "PUT") {
+    playbackStateReads++;
     return currentPlayback
       ? response(currentPlayback)
       : new Response(null, { status: 204 });
+  }
   if (u.pathname === "/v1/me/player" && init.method === "PUT") {
     const body = JSON.parse(init.body);
     playbackCommands.push({ path: u.pathname, body });
@@ -856,6 +859,81 @@ try {
     } finally {
       activateOnTransfer = true;
       deviceEntries = null;
+    }
+  });
+  await test("playback diagnostic is private, single-read, and classifies Spotify state", async () => {
+    const cookie = `rotation_session=${store.session.id}.${(await import("../dist/store.js")).sign(store.session.id)}`;
+    const r = store.session.rotation;
+    const window = r.queuedWindow;
+    const expected = r.items.find((x) => x.key === r.order[r.currentIndex]);
+    const otherQueued = r.order
+      .slice(r.currentIndex + 1, window.endIndex + 1)
+      .map((key) => r.items.find((x) => x.key === key).uri)
+      .find((uri) => uri !== expected.uri);
+    const unauthenticated = await request("/api/playback/diagnostic");
+    assert.equal(unauthenticated.status, 401);
+    const before = playbackStateReads;
+    currentPlayback = null;
+    const idle = await request(
+      "/api/playback/diagnostic",
+      "GET",
+      undefined,
+      undefined,
+      cookie,
+    );
+    assert.equal(idle.body.state, "no_playback");
+    assert.equal(idle.headers.get("cache-control"), "no-store");
+    assert.equal(playbackStateReads, before + 1);
+    currentPlayback = {
+      device: { id: window.deviceId, is_active: true },
+      currently_playing_type: "track",
+      item: { ...track, uri: expected.uri, is_playable: true },
+      is_playing: false,
+      shuffle_state: false,
+      repeat_state: "off",
+    };
+    const paused = await request(
+      "/api/playback/diagnostic",
+      "GET",
+      undefined,
+      undefined,
+      cookie,
+    );
+    assert.equal(paused.body.state, "expected_paused");
+    currentPlayback.is_playing = true;
+    currentPlayback.item = { ...track, uri: otherQueued };
+    const skipped = await request(
+      "/api/playback/diagnostic",
+      "GET",
+      undefined,
+      undefined,
+      cookie,
+    );
+    assert.equal(skipped.body.state, "other_queued_track");
+    currentPlayback.item = { ...track, uri: "spotify:track:outside123" };
+    const wrong = await request(
+      "/api/playback/diagnostic",
+      "GET",
+      undefined,
+      undefined,
+      cookie,
+    );
+    assert.equal(wrong.body.state, "wrong_track");
+    currentPlayback.device = { id: "another-device", is_active: true };
+    const moved = await request(
+      "/api/playback/diagnostic",
+      "GET",
+      undefined,
+      undefined,
+      cookie,
+    );
+    assert.equal(moved.body.state, "other_device");
+    for (const diagnostic of [idle, paused, skipped, wrong, moved]) {
+      const body = JSON.stringify(diagnostic.body);
+      assert.doesNotMatch(
+        body,
+        /spotify:track:|desktop123|another-device|Song|Artist/,
+      );
     }
   });
   await test("OAuth reconnect requires new scope and preserves only same-account settings", async () => {

@@ -25,11 +25,23 @@ export function unconfirmedPlaybackMismatch(
   remote: ConnectPlayback,
   deviceId: string,
   expectedUri: string,
-): "none" | "other-device" | "other-track" | "idle" {
-  if (remote.deviceId && remote.deviceId !== deviceId) return "other-device";
-  if (remote.uri && remote.uri !== expectedUri) return "other-track";
-  if (remote.deviceId === deviceId && remote.uri === expectedUri) return "none";
-  return "idle";
+):
+  | "none"
+  | "other-device"
+  | "unknown-device"
+  | "other-track"
+  | "no-playback"
+  | "selected-idle"
+  | "selected-paused" {
+  if (remote.deviceId !== deviceId)
+    return remote.deviceId
+      ? "other-device"
+      : remote.uri || remote.isPlaying
+        ? "unknown-device"
+        : "no-playback";
+  if (remote.uri === expectedUri)
+    return remote.isPlaying ? "none" : "selected-paused";
+  return remote.uri ? "other-track" : "selected-idle";
 }
 
 export function pendingPlaybackStatus(
