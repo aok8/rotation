@@ -56,9 +56,9 @@ function pendingRecoveryMessage(
     case "selected-paused":
       return `Spotify found the selected song on ${deviceName}, but it is paused. Press Play to try again.`;
     case "selected-idle":
-      return `${deviceName} is active in Spotify, but no song started. Open Spotify there, then press Play to retry.`;
+      return `Spotify sees ${deviceName}, but it is idle. Start any song in Spotify there once, then press Play in Rotation to retry.`;
     case "no-playback":
-      return "Spotify reports no active playback. Open Spotify on the selected device, refresh devices, then press Play to retry.";
+      return `Spotify reports no active playback on ${deviceName}. Start any song in Spotify there once, then press Play in Rotation to retry.`;
     default:
       return `Spotify has not confirmed playback on ${deviceName}. Press Play to retry.`;
   }
