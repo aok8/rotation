@@ -14,6 +14,7 @@ import {
 } from "./api";
 import {
   classifyRemotePlayback,
+  chooseConnectDevice,
   findForwardMatch,
   navigationAvailable,
   pendingPlaybackStatus,
@@ -141,6 +142,8 @@ export default function App() {
   const [devices, setDevices] = useState<ConnectDevice[]>([]);
   const [devicesLoading, setDevicesLoading] = useState(false);
   const [deviceError, setDeviceError] = useState("");
+  const [macProbeMessage, setMacProbeMessage] = useState("");
+  const [macProbeBusy, setMacProbeBusy] = useState(false);
   const [reauthorizationNeeded, setReauthorizationNeeded] = useState(false);
   const [activeDeviceId, setActiveDeviceId] = useState<string | null>(null);
   const [deviceId, setDeviceId] = useState("");
@@ -159,6 +162,9 @@ export default function App() {
     uncertain: boolean;
   } | null>(null);
   const deviceIdRef = useRef("");
+  const requireDeviceSelectionRef = useRef(
+    sessionStorage.getItem("rotation-reselect-device") === "yes",
+  );
   const playingIntentRef = useRef(false);
   const pendingUriRef = useRef("");
   const unconfirmedUriRef = useRef("");
@@ -290,14 +296,13 @@ export default function App() {
       );
       const saved = sessionStorage.getItem("rotation-connect-device");
       const previous = deviceIdRef.current;
-      const chosen =
-        (previous
-          ? available.some((device) => device.id === previous)
-            ? previous
-            : ""
-          : [saved, data.activeDeviceId].find((id) =>
-              available.some((device) => device.id === id),
-            ) || (available.length === 1 ? available[0].id! : ""));
+      const chosen = chooseConnectDevice(
+        available,
+        previous,
+        saved,
+        data.activeDeviceId,
+        requireDeviceSelectionRef.current,
+      );
       setDevices(data.devices);
       setActiveDeviceId(data.activeDeviceId);
       setDeviceId(chosen);
@@ -347,6 +352,7 @@ export default function App() {
       .filter((item): item is TrackItem => !!item);
   }, [rotation]);
   const current = ordered[rotation?.currentIndex ?? -1];
+  useEffect(() => setMacProbeMessage(""), [current?.key]);
   const upcoming = ordered.slice(
     (rotation?.currentIndex ?? -1) + 1,
     (rotation?.currentIndex ?? -1) + 4,
@@ -361,6 +367,9 @@ export default function App() {
   const selectedDevice = devices.find((device) => device.id === deviceId);
   const canPlay = !!selectedDevice && !selectedDevice.isRestricted;
   function selectDevice(id: string) {
+    requireDeviceSelectionRef.current = !id;
+    if (id) sessionStorage.removeItem("rotation-reselect-device");
+    else sessionStorage.setItem("rotation-reselect-device", "yes");
     setDeviceId(id);
     deviceIdRef.current = id;
     if (id) sessionStorage.setItem("rotation-connect-device", id);
@@ -515,6 +524,89 @@ export default function App() {
       );
       if (item) await play(item);
     });
+  }
+  async function probeMacPlayback() {
+    if (
+      !current ||
+      !session?.macLocalProbeAvailable ||
+      command.current ||
+      pendingUriRef.current
+    )
+      return;
+    command.current = true;
+    setBusy(true);
+    setMacProbeBusy(true);
+    setMacProbeMessage("");
+    try {
+      const result = await api<{
+        accepted: boolean;
+        state:
+          | "expected_playing"
+          | "expected_paused"
+          | "other_track"
+          | "idle"
+          | "unavailable";
+      }>("/api/playback/mac-probe", {
+        method: "POST",
+        signal: playbackTimeout(),
+        body: JSON.stringify({ itemKey: current.key }),
+      });
+      const messages = {
+        expected_playing:
+          "Spotify on this Mac is playing the selected song. This test does not start the shuffled queue.",
+        expected_paused:
+          "Spotify loaded the selected song but paused. Press Play in Spotify to hear it.",
+        other_track:
+          "Spotify is playing a different song. The selected song was not confirmed.",
+        idle: "Spotify reports no local playback. Open Spotify on this Mac and try again.",
+        unavailable:
+          "Spotify on this Mac is unavailable. Open the Spotify app and try again.",
+      };
+      if (result.accepted) {
+        // AppleScript can replace Spotify's active context. The saved Connect
+        // queue is no longer valid until the user chooses a device and plays.
+        requireDeviceSelectionRef.current = true;
+        sessionStorage.setItem("rotation-reselect-device", "yes");
+        sessionStorage.removeItem("rotation-connect-device");
+        deviceIdRef.current = "";
+        setDeviceId("");
+        queuedThroughRef.current = -1;
+        pendingUriRef.current = "";
+        unconfirmedUriRef.current = "";
+        setPendingUri("");
+        setIntent(false);
+        setPlayback(null);
+        setPosition(0);
+        positionRef.current = 0;
+        setSeekValue(null);
+        setPlayerMessage(
+          "The local Mac test changed Spotify playback. Choose a device and press Play to start the shuffled Rotation queue.",
+        );
+        try {
+          const latest = await api<Rotation | null>("/api/rotation", {
+            signal: AbortSignal.timeout(10_000),
+          });
+          rotationRef.current = latest;
+          setRotation(latest);
+        } catch (error) {
+          setMacProbeMessage(
+            `Local test completed, but Rotation could not refresh: ${describeError(error)} Reload the page before normal playback.`,
+          );
+          return;
+        }
+      }
+      setMacProbeMessage(
+        result.accepted
+          ? `${messages[result.state]} Choose a device above and press Play to start normal Rotation playback.`
+          : "Spotify on this Mac did not accept the playback test. Open Spotify and try again.",
+      );
+    } catch (error) {
+      setMacProbeMessage(describeError(error));
+    } finally {
+      command.current = false;
+      setBusy(false);
+      setMacProbeBusy(false);
+    }
   }
   async function pauseAtEnd(removedUri?: string) {
     if (
@@ -1464,6 +1556,26 @@ export default function App() {
                     <p className="device-help">
                       Select an available device to enable playback controls.
                     </p>
+                  )}
+                  {session.macLocalProbeAvailable && current && (
+                    <div className="device-help">
+                      <p>
+                        Mac playback test: play this selected song in Spotify on
+                        this Mac. This does not start the shuffled queue.
+                      </p>
+                      <button
+                        className="secondary-button"
+                        onClick={() => void probeMacPlayback()}
+                        disabled={busy || !!pendingUri}
+                      >
+                        {macProbeBusy ? "Testing local Mac playback…" : "Try local Mac playback"}
+                      </button>
+                      {macProbeMessage && (
+                        <p role="status" aria-live="polite">
+                          {macProbeMessage}
+                        </p>
+                      )}
+                    </div>
                   )}
                 </div>
                 {!session.settings?.sourceId ? (

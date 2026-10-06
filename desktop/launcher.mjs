@@ -2,6 +2,7 @@
 import { createServer } from "node:net";
 import { spawn } from "node:child_process";
 import { mkdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -82,6 +83,10 @@ async function main() {
     options.appRoot || dirname(dirname(fileURLToPath(import.meta.url))),
   );
   const { server, webDist } = packagedPaths(appRoot);
+  const macPackage =
+    process.platform === "darwin" &&
+    /\.app\/Contents\/Resources\/Rotation$/.test(appRoot) &&
+    existsSync(resolve(appRoot, "build-manifest.json"));
   const paths = userPaths();
   const configDir = resolve(options.configDir || paths.configDir);
   const dataDir = resolve(options.dataDir || paths.dataDir);
@@ -115,7 +120,13 @@ async function main() {
     [server],
     {
       cwd: appRoot,
-      env: childEnvironment({ config, dataDir, webDist, port: options.port }),
+      env: childEnvironment({
+        config,
+        dataDir,
+        webDist,
+        port: options.port,
+        macPackage,
+      }),
       stdio: ["ignore", "inherit", "inherit", "ipc"],
       windowsHide: true,
     },

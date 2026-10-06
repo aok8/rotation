@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   classifyRemotePlayback,
+  chooseConnectDevice,
   findForwardMatch,
   navigationAvailable,
   pendingPlaybackStatus,
@@ -155,4 +156,13 @@ test("an unconfirmed command never adopts another queued song", () => {
     unconfirmedPlaybackMismatch(state(current, false), device, current),
     "selected-paused",
   );
+});
+
+test("local Mac probe requires explicit Connect device selection", () => {
+  const available = [
+    { id: "mac", name: "This Mac", type: "computer", isActive: true, isRestricted: false },
+  ];
+  assert.equal(chooseConnectDevice(available, "", null, "mac", true), "");
+  assert.equal(chooseConnectDevice(available, "", null, "mac", false), "mac");
+  assert.equal(chooseConnectDevice(available, "mac", "mac", "mac", true), "");
 });

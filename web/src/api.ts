@@ -10,6 +10,7 @@ export type Settings = { sourceId: string | null; archiveId: string | null };
 export type Session = {
   authenticated: boolean;
   desktop?: boolean;
+  macLocalProbeAvailable?: boolean;
   account?: {
     display_name?: string;
     name?: string;

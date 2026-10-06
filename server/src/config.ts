@@ -11,6 +11,10 @@ export const dataDir = resolve(env.DATA_DIR || "./data");
 export const port = Number(env.PORT || 3000);
 export const host = env.HOST || "0.0.0.0";
 export const desktopMode = env.DESKTOP_MODE === "1";
+export const macLocalProbeAvailable =
+  desktopMode &&
+  process.platform === "darwin" &&
+  env.MAC_LOCAL_SPOTIFY_PROBE === "1";
 export const desktopControlToken = env.DESKTOP_CONTROL_TOKEN || "";
 if (desktopMode && (host !== "127.0.0.1" || desktopControlToken.length < 32))
   throw new Error("Desktop mode requires loopback HOST and control token");

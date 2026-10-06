@@ -4,6 +4,7 @@ import {
   baseOrigin,
   desktopControlToken,
   desktopMode,
+  macLocalProbeAvailable,
   uriPattern,
 } from "./config.js";
 import { AppError, requireSession, requireCsrf, id, object } from "./errors.js";
@@ -29,6 +30,7 @@ import {
   removeCore,
 } from "./rotation.js";
 import type { Operation } from "./types.js";
+import { probeMacRotationTrack } from "./mac-local.js";
 
 let busy = false;
 export function registerApiRoutes(app: FastifyInstance) {
@@ -41,6 +43,7 @@ export function registerApiRoutes(app: FastifyInstance) {
           settings: s.settings || null,
           csrfToken: s.csrf,
           ...(desktopMode ? { desktop: true } : {}),
+          ...(macLocalProbeAvailable ? { macLocalProbeAvailable: true } : {}),
         }
       : desktopMode
         ? {
@@ -399,6 +402,37 @@ export function registerApiRoutes(app: FastifyInstance) {
   app.get("/api/playback/diagnostic", async (req, reply) => {
     reply.header("Cache-Control", "no-store");
     return playbackDiagnostic(requireSession(req));
+  });
+  app.post("/api/playback/mac-probe", async (req) => {
+    const s = requireSession(req);
+    requireCsrf(req, s);
+    if (!macLocalProbeAvailable)
+      throw new AppError(
+        "mac_local_unavailable",
+        "This playback test is available only in the packaged Mac app.",
+        404,
+      );
+    if (busy)
+      throw new AppError(
+        "operation_in_progress",
+        "A playlist change is already in progress.",
+        409,
+      );
+    const b = object(req.body);
+    const r = rotation(s);
+    const item = current(r);
+    if (!item || b.itemKey !== item.key)
+      throw new AppError(
+        "item_changed",
+        "The selected song changed. Refresh the player.",
+        409,
+      );
+    busy = true;
+    try {
+      return await probeMacRotationTrack(r, item.uri);
+    } finally {
+      busy = false;
+    }
   });
   app.put("/api/playback/seek", async (req) => {
     const s = requireSession(req);

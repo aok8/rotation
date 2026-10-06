@@ -22,6 +22,8 @@ On first launch, rotation shows its local setup page. Enter your Spotify Client 
 
 If you used an older browser-player version, choose **Reconnect Spotify** after updating to grant device and playback-state access. Reconnecting the same Spotify account keeps your saved playlist choices.
 
+On the packaged macOS app, **Try local Mac playback** tests whether rotation can start the currently selected song in the Spotify desktop app. It plays one song only and replaces Spotify's active playback queue; your saved Rotation order stays intact. After the test, choose a Spotify device again and press **Play** to start the shuffled queue. If macOS blocks the test, allow Rotation to control Spotify in **System Settings → Privacy & Security → Automation**, then retry.
+
 ## Launch, quit, and update
 
 Launch rotation when you want to listen. Use **Quit rotation** in the browser to stop it, whether or not you are signed in. Closing the tab alone leaves the local server running; reopen `http://127.0.0.1:3000` to reach Quit. Launching rotation again while it is already running opens the existing local app. No service starts at boot.

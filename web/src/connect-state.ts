@@ -1,4 +1,20 @@
-import type { ConnectPlayback } from "./api";
+import type { ConnectDevice, ConnectPlayback } from "./api";
+
+export function chooseConnectDevice(
+  available: ConnectDevice[],
+  previous: string,
+  saved: string | null,
+  active: string | null,
+  requireSelection: boolean,
+) {
+  if (requireSelection) return "";
+  if (previous)
+    return available.some((device) => device.id === previous) ? previous : "";
+  return (
+    [saved, active].find((id) => available.some((device) => device.id === id)) ||
+    (available.length === 1 ? available[0].id || "" : "")
+  );
+}
 
 export type RemoteTransition =
   | "current-playing"
