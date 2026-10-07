@@ -1599,20 +1599,30 @@ export default function App() {
                     </p>
                   )}
                   {session.macLocalProbeAvailable && current && (
-                    <div className="device-help">
-                      <p>
-                        Mac playback test: play this selected song in Spotify on
-                        this Mac. This does not start the shuffled queue.
-                      </p>
+                    <div className="mac-probe-callout">
+                      <div>
+                        <h2>Test Spotify on this Mac</h2>
+                        <p>
+                          Plays only the selected song in the Mac desktop app.
+                          The Play control below uses Spotify Connect for the
+                          full shuffled queue.
+                        </p>
+                      </div>
                       <button
                         className="secondary-button"
                         onClick={() => void probeMacPlayback()}
                         disabled={busy || !!pendingUri}
                       >
-                        {macProbeBusy ? "Testing local Mac playback…" : "Try local Mac playback"}
+                        {macProbeBusy
+                          ? "Testing local Mac playback…"
+                          : "Try local Mac playback"}
                       </button>
                       {macProbeMessage && (
-                        <p role="status" aria-live="polite">
+                        <p
+                          className="mac-probe-result"
+                          role="status"
+                          aria-live="polite"
+                        >
                           {macProbeMessage}
                         </p>
                       )}

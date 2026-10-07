@@ -2,6 +2,7 @@
 import { cp, mkdir, readdir, rm, stat, writeFile, chmod } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -133,7 +134,7 @@ async function inspect(directory) {
 }
 await inspect(output);
 const manifest = {
-  app: 'rotation', platform, arch, nodeVersion,
+  app: 'rotation', platform, arch, nodeVersion, buildId: randomBytes(16).toString('hex'),
   files: ['desktop/launcher.mjs', 'desktop/runtime.mjs', 'server/dist', 'server/node_modules', 'server/package.json', 'web/dist', `runtime/${runtimeName}`],
 };
 await writeFile(join(appRoot, 'build-manifest.json'), JSON.stringify(manifest, null, 2) + '\n');

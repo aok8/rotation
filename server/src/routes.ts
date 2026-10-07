@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import {
   baseOrigin,
   desktopControlToken,
+  desktopBuildId,
   desktopMode,
   macLocalProbeAvailable,
   uriPattern,
@@ -57,6 +58,7 @@ export function registerApiRoutes(app: FastifyInstance) {
           settings: s.settings || null,
           csrfToken: s.csrf,
           ...(desktopMode ? { desktop: true } : {}),
+          ...(desktopMode && desktopBuildId ? { desktopBuildId } : {}),
           ...(macLocalProbeAvailable ? { macLocalProbeAvailable: true } : {}),
         }
       : desktopMode
@@ -64,6 +66,7 @@ export function registerApiRoutes(app: FastifyInstance) {
             authenticated: false,
             desktop: true,
             csrfToken: desktopControlToken,
+            ...(desktopBuildId ? { desktopBuildId } : {}),
           }
         : { authenticated: false };
   });
