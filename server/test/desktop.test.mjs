@@ -14,12 +14,14 @@ process.env.HOST = "127.0.0.1";
 process.env.DATA_DIR = dataDir;
 process.env.DESKTOP_MODE = "1";
 process.env.DESKTOP_CONTROL_TOKEN = "b".repeat(64);
+process.env.ROTATION_BUILD_ID = "c".repeat(32);
 const { app } = await import("../dist/index.js");
 const base = `http://127.0.0.1:${app.server.address().port}`;
 try {
   await test("desktop quit is loopback mode only and requires same-origin CSRF", async () => {
     const session = await (await fetch(`${base}/api/session`)).json();
     assert.equal(session.desktop, true);
+    assert.equal(session.desktopBuildId, "c".repeat(32));
     assert.equal(session.authenticated, false);
     const missing = await fetch(`${base}/api/desktop/quit`, {
       method: "POST",

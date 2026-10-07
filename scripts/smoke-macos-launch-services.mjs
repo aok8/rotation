@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn, execFileSync } from "node:child_process";
 import { createServer } from "node:net";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -9,6 +9,7 @@ import { setTimeout as delay } from "node:timers/promises";
 if (process.platform !== "darwin") throw new Error("This smoke test requires macOS.");
 const bundle = process.argv[2] && resolve(process.argv[2]);
 if (!bundle?.endsWith(".app")) throw new Error("Pass the staged Rotation.app path.");
+const { buildId } = JSON.parse(await readFile(join(bundle, "Contents", "Resources", "Rotation", "build-manifest.json"), "utf8"));
 
 const listener = createServer();
 await new Promise((done, reject) => {
@@ -60,7 +61,7 @@ try {
   if (!healthy) throw new Error(`App did not become healthy after Launch Services open: ${launchOutput}`);
   execFileSync("xcrun", ["swift", resolve("scripts/verify-macos-launch.swift"), bundle], { stdio: "inherit" });
   const session = await (await fetch(`${url}/api/session`)).json();
-  if (session.desktop !== true || !session.csrfToken)
+  if (session.desktop !== true || !session.csrfToken || session.desktopBuildId !== buildId)
     throw new Error("Desktop control session was unavailable.");
   const quit = await fetch(`${url}/api/desktop/quit`, {
     method: "POST",

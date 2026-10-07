@@ -12,6 +12,7 @@ final class RotationLauncher: NSObject, NSApplicationDelegate {
     private var openedMain = false
     private var sawLocalService = false
     private var launchDeadline = Date.distantFuture
+    private var expectedBuildId: String?
 
     private var noOpen: Bool { arguments.contains("--no-open") }
     private var port: Int {
@@ -34,6 +35,20 @@ final class RotationLauncher: NSObject, NSApplicationDelegate {
         }
 
         let root = resources.appendingPathComponent("Rotation", isDirectory: true)
+        do {
+            let manifest = root.appendingPathComponent("build-manifest.json")
+            let data = try Data(contentsOf: manifest)
+            let fields = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            guard let buildId = fields?["buildId"] as? String,
+                  buildId.range(of: "^[a-f0-9]{32}$", options: .regularExpression) != nil else {
+                throw NSError(domain: "Rotation", code: 1)
+            }
+            expectedBuildId = buildId
+        } catch {
+            showAlert(title: "Rotation could not start", message: "The bundled build information is missing or invalid. Reinstall Rotation and try again.")
+            NSApp.terminate(nil)
+            return
+        }
         let process = Process()
         process.executableURL = root.appendingPathComponent("runtime/node")
         process.arguments = [
@@ -51,7 +66,12 @@ final class RotationLauncher: NSObject, NSApplicationDelegate {
                 if self.quitting {
                     NSApp.reply(toApplicationShouldTerminate: true)
                 } else {
-                    if finished.terminationStatus != 0 {
+                    if finished.terminationStatus == 16 {
+                        self.showAlert(
+                            title: "Another Rotation is running",
+                            message: "The browser is connected to a different Rotation build. Open that Rotation page, choose Quit rotation, then reopen this app. Your saved Spotify settings will remain available."
+                        )
+                    } else if finished.terminationStatus != 0 {
                         self.showAlert(
                             title: "Rotation could not start",
                             message: "Check the local setup and try opening Rotation again. If port \(self.port) is occupied, quit the other app first."
@@ -128,7 +148,8 @@ final class RotationLauncher: NSObject, NSApplicationDelegate {
                 if status == 200,
                    let data,
                    let session = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-                   session["desktop"] as? Bool == true {
+                   session["desktop"] as? Bool == true,
+                   session["desktopBuildId"] as? String == self.expectedBuildId {
                     self.sawLocalService = true
                     NSLog("Rotation local service is ready.")
                     self.openedMain = true
@@ -153,7 +174,10 @@ final class RotationLauncher: NSObject, NSApplicationDelegate {
                 guard !self.quitting, self.child?.isRunning == true else { return }
                 if (response as? HTTPURLResponse)?.statusCode == 200,
                    let data,
-                   String(data: data, encoding: .utf8)?.contains("<title>Set up rotation</title>") == true {
+                   let html = String(data: data, encoding: .utf8),
+                   html.contains("<title>Set up rotation</title>"),
+                   let buildId = self.expectedBuildId,
+                   html.contains("<meta name=\"rotation-build-id\" content=\"\(buildId)\">") {
                     self.sawLocalService = true
                     NSLog("Rotation first-run setup is ready.")
                     self.openedSetup = true
@@ -177,7 +201,7 @@ final class RotationLauncher: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !noOpen { openBrowser() }
+        if !noOpen && (openedMain || openedSetup) { openBrowser() }
         return true
     }
 }

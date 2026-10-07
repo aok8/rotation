@@ -94,6 +94,7 @@ export function childEnvironment({
   parentEnv = process.env,
   os = platform(),
   macPackage = false,
+  buildId = null,
 }) {
   const baseUrl = `http://${LOOPBACK}:${port}`;
   return {
@@ -110,12 +111,20 @@ export function childEnvironment({
     DESKTOP_MODE: "1",
     DESKTOP_CONTROL_TOKEN: randomBytes(32).toString("hex"),
     MAC_LOCAL_SPOTIFY_PROBE: os === "darwin" && macPackage ? "1" : "0",
+    ROTATION_BUILD_ID: buildId || "",
   };
 }
 
-function page(nonce, port) {
+export function classifyExistingDesktop(session, buildId) {
+  if (session?.desktop !== true) return "foreign";
+  return (session.desktopBuildId || null) === (buildId || null)
+    ? "same"
+    : "different";
+}
+
+function page(nonce, port, buildId) {
   const callback = `http://${LOOPBACK}:${port}/auth/callback`;
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Set up rotation</title><style>body{font:16px system-ui,sans-serif;background:#f6f1e9;color:#252c28;margin:0;padding:2rem}main{max-width:32rem;margin:5vh auto;background:#fffcf7;padding:2rem;border:1px solid #e6d8c9;border-radius:18px}label{display:block;margin:1rem 0}.field{display:block;width:100%;box-sizing:border-box;padding:.7rem;border:1px solid #a9a99f;border-radius:8px;font:inherit}button{padding:.7rem 1rem;border:0;border-radius:8px;background:#b95f4d;color:white;font:inherit;cursor:pointer}.secondary{background:#4b5b52}code{overflow-wrap:anywhere}p{line-height:1.5}</style></head><body><main><h1>Set up rotation</h1><p>Create a Spotify Developer app and register this exact redirect URI:</p><p><code>${callback}</code></p><p>Your credentials stay in your user profile and are never bundled with rotation.</p><form method="post" action="/save"><input type="hidden" name="nonce" value="${nonce}"><label>Spotify Client ID<input class="field" name="clientId" autocomplete="off" required></label><label>Spotify Client Secret<input class="field" name="clientSecret" type="password" autocomplete="off" required></label><button type="submit">Save and open rotation</button></form><form method="post" action="/quit"><input type="hidden" name="nonce" value="${nonce}"><p><button class="secondary" type="submit">Quit rotation</button></p></form></main></body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="rotation-build-id" content="${buildId || ""}"><title>Set up rotation</title><style>body{font:16px system-ui,sans-serif;background:#f6f1e9;color:#252c28;margin:0;padding:2rem}main{max-width:32rem;margin:5vh auto;background:#fffcf7;padding:2rem;border:1px solid #e6d8c9;border-radius:18px}label{display:block;margin:1rem 0}.field{display:block;width:100%;box-sizing:border-box;padding:.7rem;border:1px solid #a9a99f;border-radius:8px;font:inherit}button{padding:.7rem 1rem;border:0;border-radius:8px;background:#b95f4d;color:white;font:inherit;cursor:pointer}.secondary{background:#4b5b52}code{overflow-wrap:anywhere}p{line-height:1.5}</style></head><body><main><h1>Set up rotation</h1><p>Create a Spotify Developer app and register this exact redirect URI:</p><p><code>${callback}</code></p><p>Your credentials stay in your user profile and are never bundled with rotation.</p><form method="post" action="/save"><input type="hidden" name="nonce" value="${nonce}"><label>Spotify Client ID<input class="field" name="clientId" autocomplete="off" required></label><label>Spotify Client Secret<input class="field" name="clientSecret" type="password" autocomplete="off" required></label><button type="submit">Save and open rotation</button></form><form method="post" action="/quit"><input type="hidden" name="nonce" value="${nonce}"><p><button class="secondary" type="submit">Quit rotation</button></p></form></main></body></html>`;
 }
 
 function respond(res, status, body, contentType = "text/html; charset=utf-8") {
@@ -136,7 +145,7 @@ function safeEqual(a, b) {
   return x.length === y.length && timingSafeEqual(x, y);
 }
 
-export async function startSetup({ port, configDir }) {
+export async function startSetup({ port, configDir, buildId = null }) {
   const origin = `http://${LOOPBACK}:${port}`;
   const nonce = randomBytes(32).toString("hex");
   let done;
@@ -151,7 +160,7 @@ export async function startSetup({ port, configDir }) {
         "Set-Cookie",
         `rotation_setup=${nonce}; HttpOnly; SameSite=Strict; Path=/`,
       );
-      return respond(res, 200, page(nonce, port));
+      return respond(res, 200, page(nonce, port, buildId));
     }
     if (req.method !== "POST" || !["/save", "/quit"].includes(req.url))
       return respond(res, 404, "Not found.");

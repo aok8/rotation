@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 import { createServer } from "node:net";
 import { spawn } from "node:child_process";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   childEnvironment,
+  classifyExistingDesktop,
   LOOPBACK,
   openBrowser,
   packagedPaths,
@@ -55,10 +56,21 @@ async function existingDesktop(url) {
     const response = await fetch(`${url}/api/session`, {
       signal: AbortSignal.timeout(500),
     });
-    return response.ok && (await response.json()).desktop === true;
+    return response.ok ? await response.json() : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+async function packagedBuildId(appRoot) {
+  const path = resolve(appRoot, "build-manifest.json");
+  if (!existsSync(path)) return null;
+  const manifest = JSON.parse(await readFile(path, "utf8"));
+  if (!/^[a-f0-9]{32}$/.test(manifest?.buildId || ""))
+    throw new Error(
+      "This Rotation package has no valid build identity. Reinstall it.",
+    );
+  return manifest.buildId;
 }
 
 async function portOccupied(port) {
@@ -87,12 +99,22 @@ async function main() {
     process.platform === "darwin" &&
     /\.app\/Contents\/Resources\/Rotation$/.test(appRoot) &&
     existsSync(resolve(appRoot, "build-manifest.json"));
+  const buildId = await packagedBuildId(appRoot);
   const paths = userPaths();
   const configDir = resolve(options.configDir || paths.configDir);
   const dataDir = resolve(options.dataDir || paths.dataDir);
   const url = `http://${LOOPBACK}:${options.port}`;
   if (await portOccupied(options.port)) {
-    if (await existingDesktop(url)) {
+    const existing = await existingDesktop(url);
+    const classification = classifyExistingDesktop(existing, buildId);
+    if (classification === "different") {
+      const error = new Error(
+        "A different Rotation build is already running. Open its browser page, choose Quit rotation, then reopen this app.",
+      );
+      error.code = "ROTATION_BUILD_CONFLICT";
+      throw error;
+    }
+    if (classification === "same") {
       if (options.open) openBrowser(url);
       return;
     }
@@ -102,7 +124,7 @@ async function main() {
   }
   let config = await readConfig(configDir);
   if (!config) {
-    const setup = await startSetup({ port: options.port, configDir });
+    const setup = await startSetup({ port: options.port, configDir, buildId });
     if (options.open) openBrowser(setup.url);
     else console.log(`Open ${setup.url} to complete setup.`);
     const cancelSetup = () => setup.cancel();
@@ -126,6 +148,7 @@ async function main() {
         webDist,
         port: options.port,
         macPackage,
+        buildId,
       }),
       stdio: ["ignore", "inherit", "inherit", "ipc"],
       windowsHide: true,
@@ -172,5 +195,5 @@ async function main() {
 
 main().catch((error) => {
   console.error(`Rotation could not start: ${error.message}`);
-  process.exitCode = 1;
+  process.exitCode = error.code === "ROTATION_BUILD_CONFLICT" ? 16 : 1;
 });

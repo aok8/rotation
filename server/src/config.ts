@@ -15,6 +15,9 @@ export const macLocalProbeAvailable =
   desktopMode &&
   process.platform === "darwin" &&
   env.MAC_LOCAL_SPOTIFY_PROBE === "1";
+export const desktopBuildId = /^[a-f0-9]{32}$/.test(env.ROTATION_BUILD_ID || "")
+  ? env.ROTATION_BUILD_ID
+  : null;
 export const desktopControlToken = env.DESKTOP_CONTROL_TOKEN || "";
 if (desktopMode && (host !== "127.0.0.1" || desktopControlToken.length < 32))
   throw new Error("Desktop mode requires loopback HOST and control token");

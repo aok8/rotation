@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { mkdtemp, mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -13,6 +13,7 @@ if (!stagingRoot) {
 const appRoot = process.platform === "darwin" && stagingRoot.endsWith(".app")
   ? join(stagingRoot, "Contents", "Resources", "Rotation")
   : stagingRoot;
+const { buildId } = JSON.parse(await readFile(join(appRoot, "build-manifest.json"), "utf8"));
 const runtime = join(appRoot, "runtime", process.platform === "win32" ? "node.exe" : "node");
 if (!(await stat(runtime).catch(() => null))?.isFile()) {
   console.error("The staged bundle is missing its Node runtime.");
@@ -78,7 +79,7 @@ try {
     throw new Error("Health response was not the expected minimal result.");
   const sessionResponse = await fetch(`${url}/api/session`);
   const session = await sessionResponse.json();
-  if (session.authenticated !== false || session.desktop !== true || !session.csrfToken)
+  if (session.authenticated !== false || session.desktop !== true || !session.csrfToken || session.desktopBuildId !== buildId)
     throw new Error("Unauthenticated desktop setup session is missing.");
   const unauthorized = await fetch(`${url}/api/playlists`);
   if (unauthorized.status !== 401) throw new Error("Private playlist API is not protected.");
