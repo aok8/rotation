@@ -6,6 +6,7 @@ import {
   findForwardMatch,
   navigationAvailable,
   pendingPlaybackStatus,
+  playbackObservationStillRelevant,
   unconfirmedPlaybackMismatch,
 } from "../src/connect-state.ts";
 
@@ -165,4 +166,11 @@ test("local Mac probe requires explicit Connect device selection", () => {
   assert.equal(chooseConnectDevice(available, "", null, "mac", true), "");
   assert.equal(chooseConnectDevice(available, "", null, "mac", false), "mac");
   assert.equal(chooseConnectDevice(available, "mac", "mac", "mac", true), "");
+});
+
+test("an in-flight playback observation is ignored after a probe or device switch", () => {
+  assert.equal(playbackObservationStillRelevant("mac", "mac", false), true);
+  assert.equal(playbackObservationStillRelevant("mac", "mac", true), false);
+  assert.equal(playbackObservationStillRelevant("mac", "web", false), false);
+  assert.equal(playbackObservationStillRelevant("mac", "", false), false);
 });

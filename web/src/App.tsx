@@ -18,6 +18,7 @@ import {
   findForwardMatch,
   navigationAvailable,
   pendingPlaybackStatus,
+  playbackObservationStillRelevant,
   unconfirmedPlaybackMismatch,
 } from "./connect-state";
 
@@ -525,6 +526,34 @@ export default function App() {
       if (item) await play(item);
     });
   }
+  function clearConnectAfterMacProbe() {
+    // AppleScript can replace Spotify's active context. Require an explicit
+    // Connect choice before commands use the saved Rotation order again.
+    requireDeviceSelectionRef.current = true;
+    sessionStorage.setItem("rotation-reselect-device", "yes");
+    sessionStorage.removeItem("rotation-connect-device");
+    deviceIdRef.current = "";
+    setDeviceId("");
+    queuedThroughRef.current = -1;
+    pendingUriRef.current = "";
+    unconfirmedUriRef.current = "";
+    setPendingUri("");
+    setIntent(false);
+    setPlayback(null);
+    setPosition(0);
+    positionRef.current = 0;
+    setSeekValue(null);
+    setPlayerMessage(
+      "The local Mac test may have changed Spotify playback. Choose a device and press Play to start the shuffled Rotation queue.",
+    );
+  }
+  async function reloadRotationAfterMacProbe() {
+    const latest = await api<Rotation | null>("/api/rotation", {
+      signal: AbortSignal.timeout(10_000),
+    });
+    rotationRef.current = latest;
+    setRotation(latest);
+  }
   async function probeMacPlayback() {
     if (
       !current ||
@@ -548,7 +577,7 @@ export default function App() {
           | "unavailable";
       }>("/api/playback/mac-probe", {
         method: "POST",
-        signal: playbackTimeout(),
+        signal: AbortSignal.timeout(45_000),
         body: JSON.stringify({ itemKey: current.key }),
       });
       const messages = {
@@ -563,31 +592,9 @@ export default function App() {
           "Spotify on this Mac is unavailable. Open the Spotify app and try again.",
       };
       if (result.accepted) {
-        // AppleScript can replace Spotify's active context. The saved Connect
-        // queue is no longer valid until the user chooses a device and plays.
-        requireDeviceSelectionRef.current = true;
-        sessionStorage.setItem("rotation-reselect-device", "yes");
-        sessionStorage.removeItem("rotation-connect-device");
-        deviceIdRef.current = "";
-        setDeviceId("");
-        queuedThroughRef.current = -1;
-        pendingUriRef.current = "";
-        unconfirmedUriRef.current = "";
-        setPendingUri("");
-        setIntent(false);
-        setPlayback(null);
-        setPosition(0);
-        positionRef.current = 0;
-        setSeekValue(null);
-        setPlayerMessage(
-          "The local Mac test changed Spotify playback. Choose a device and press Play to start the shuffled Rotation queue.",
-        );
+        clearConnectAfterMacProbe();
         try {
-          const latest = await api<Rotation | null>("/api/rotation", {
-            signal: AbortSignal.timeout(10_000),
-          });
-          rotationRef.current = latest;
-          setRotation(latest);
+          await reloadRotationAfterMacProbe();
         } catch (error) {
           setMacProbeMessage(
             `Local test completed, but Rotation could not refresh: ${describeError(error)} Reload the page before normal playback.`,
@@ -601,7 +608,22 @@ export default function App() {
           : "Spotify on this Mac did not accept the playback test. Open Spotify and try again.",
       );
     } catch (error) {
-      setMacProbeMessage(describeError(error));
+      if (
+        (error as Error).name === "TimeoutError" ||
+        (error as Error).name === "AbortError"
+      ) {
+        clearConnectAfterMacProbe();
+        try {
+          await reloadRotationAfterMacProbe();
+          setMacProbeMessage(
+            "The local Mac test timed out, so playback may have changed. Choose a device and press Play to restart normal Rotation playback.",
+          );
+        } catch (refreshError) {
+          setMacProbeMessage(
+            `The local Mac test timed out and Rotation could not refresh: ${describeError(refreshError)} Reload the page before normal playback.`,
+          );
+        }
+      } else setMacProbeMessage(describeError(error));
     } finally {
       command.current = false;
       setBusy(false);
@@ -832,6 +854,7 @@ export default function App() {
       Date.now() < nextPollAllowedRef.current
     )
       return;
+    const requestedDeviceId = deviceIdRef.current;
     let remote: ConnectPlayback;
     const observationGap = lastObservedAtRef.current
       ? Date.now() - lastObservedAtRef.current
@@ -840,8 +863,26 @@ export default function App() {
       remote = await api<ConnectPlayback>("/api/playback/state", {
         signal: AbortSignal.timeout(10_000),
       });
+      // A local Mac probe or a device change can begin while this GET waits.
+      // Ignore its stale result before it can restore the old Connect queue.
+      if (
+        !playbackObservationStillRelevant(
+          requestedDeviceId,
+          deviceIdRef.current,
+          command.current,
+        )
+      )
+        return;
       lastObservedAtRef.current = Date.now();
     } catch (error) {
+      if (
+        !playbackObservationStillRelevant(
+          requestedDeviceId,
+          deviceIdRef.current,
+          command.current,
+        )
+      )
+        return;
       const apiError = error as ApiError;
       if (apiError.status === 429)
         nextPollAllowedRef.current =

@@ -37,6 +37,14 @@ export function navigationAvailable(
   return !pendingUri && !commandInFlight;
 }
 
+export function playbackObservationStillRelevant(
+  requestedDeviceId: string,
+  selectedDeviceId: string,
+  commandInFlight: boolean,
+) {
+  return !commandInFlight && requestedDeviceId === selectedDeviceId;
+}
+
 export function unconfirmedPlaybackMismatch(
   remote: ConnectPlayback,
   deviceId: string,
