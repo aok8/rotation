@@ -53,6 +53,37 @@ try {
     assert.equal(env.APP_BASE_URL, "http://127.0.0.1:3000");
     assert.equal(env.DESKTOP_MODE, "1");
     assert.equal(env.DESKTOP_CONTROL_TOKEN.length, 64);
+    assert.equal(env.MAC_LOCAL_SPOTIFY_PROBE, "0");
+    const macEnv = childEnvironment({
+      config: {
+        spotifyClientId: "client123456",
+        spotifyClientSecret: "secret123456",
+        sessionSecret: "a".repeat(64),
+      },
+      dataDir: "/private/data",
+      webDist: "/app/web/dist",
+      port: 3000,
+      parentEnv: { MAC_LOCAL_SPOTIFY_PROBE: "1" },
+      os: "darwin",
+      macPackage: true,
+    });
+    assert.equal(macEnv.MAC_LOCAL_SPOTIFY_PROBE, "1");
+    assert.equal(
+      childEnvironment({
+        config: {
+          spotifyClientId: "client123456",
+          spotifyClientSecret: "secret123456",
+          sessionSecret: "a".repeat(64),
+        },
+        dataDir: "/private/data",
+        webDist: "/app/web/dist",
+        port: 3000,
+        parentEnv: { MAC_LOCAL_SPOTIFY_PROBE: "1" },
+        os: "linux",
+        macPackage: true,
+      }).MAC_LOCAL_SPOTIFY_PROBE,
+      "0",
+    );
   });
   await test("first-run setup requires same-origin nonce before saving credentials", async () => {
     const port = await freePort();

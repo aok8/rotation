@@ -31,7 +31,10 @@ export function userPaths({
     return { configDir: base, dataDir: posix.join(base, "data") };
   }
   return {
-    configDir: posix.join(env.XDG_CONFIG_HOME || posix.join(home, ".config"), "rotation"),
+    configDir: posix.join(
+      env.XDG_CONFIG_HOME || posix.join(home, ".config"),
+      "rotation",
+    ),
     dataDir: posix.join(
       env.XDG_DATA_HOME || posix.join(home, ".local", "share"),
       "rotation",
@@ -89,6 +92,8 @@ export function childEnvironment({
   webDist,
   port,
   parentEnv = process.env,
+  os = platform(),
+  macPackage = false,
 }) {
   const baseUrl = `http://${LOOPBACK}:${port}`;
   return {
@@ -104,6 +109,7 @@ export function childEnvironment({
     WEB_DIST_DIR: webDist,
     DESKTOP_MODE: "1",
     DESKTOP_CONTROL_TOKEN: randomBytes(32).toString("hex"),
+    MAC_LOCAL_SPOTIFY_PROBE: os === "darwin" && macPackage ? "1" : "0",
   };
 }
 

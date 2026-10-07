@@ -35,6 +35,7 @@ let deviceAvailable = true;
 let deviceEntries = null;
 let failPlay = false;
 let activateOnTransfer = true;
+let heldPlay = null;
 let userId = "user";
 const track = {
   type: "track",
@@ -116,6 +117,12 @@ globalThis.fetch = async (input, init = {}) => {
       body: init.body ? JSON.parse(init.body) : null,
       positionMs: u.searchParams.get("position_ms"),
     });
+    if (u.pathname === "/v1/me/player/play" && heldPlay) {
+      const held = heldPlay;
+      heldPlay = null;
+      held.started();
+      await held.resume;
+    }
     if (u.pathname === "/v1/me/player/shuffle" && currentPlayback)
       currentPlayback.shuffle_state = u.searchParams.get("state") === "true";
     if (u.pathname === "/v1/me/player/repeat" && currentPlayback)
@@ -178,6 +185,9 @@ globalThis.fetch = async (input, init = {}) => {
 };
 const { app } = await import("../dist/index.js");
 const { store, save } = await import("../dist/store.js");
+const { probeMacTrack, probeMacRotationTrack } = await import(
+  "../dist/mac-local.js"
+);
 const address = app.server.address();
 const base = `http://127.0.0.1:${address.port}`;
 async function request(path, method = "GET", body, csrf, cookie) {
@@ -200,6 +210,57 @@ async function request(path, method = "GET", body, csrf, cookie) {
   };
 }
 try {
+  await test("Mac local probe passes only a validated track URI as an argument", async () => {
+    const calls = [];
+    const result = await probeMacTrack(track.uri, {
+      run: async (script, args) => {
+        calls.push({ script, args });
+        return calls.length === 2 ? `playing\t${track.uri}\n` : "";
+      },
+      wait: async () => {},
+    });
+    assert.deepEqual(result, { accepted: true, state: "expected_playing" });
+    assert.deepEqual(calls[0].args, [track.uri]);
+    assert.match(calls[0].script, /play track selectedTrack/);
+    assert.match(calls[1].script, /id of current track/);
+    let observations = 0;
+    const delayed = await probeMacTrack(track.uri, {
+      run: async (_script, args) => {
+        if (args.length) return "";
+        observations++;
+        return observations < 3 ? "stopped\t\n" : `playing\t${track.uri}\n`;
+      },
+      wait: async () => {},
+    });
+    assert.deepEqual(delayed, { accepted: true, state: "expected_playing" });
+    assert.equal(observations, 3);
+    await assert.rejects(
+      probeMacTrack('spotify:track:abc"; delete', {
+        run: async () => {
+          throw new Error("must not execute");
+        },
+      }),
+      (error) => error.code === "invalid_playback",
+    );
+    await assert.rejects(
+      probeMacTrack(track.uri, {
+        run: async () => {
+          throw { stderr: "error -1743" };
+        },
+      }),
+      (error) =>
+        error.code === "mac_automation_denied" &&
+        !error.message.includes(track.uri),
+    );
+    const unavailable = await probeMacTrack(track.uri, {
+      run: async (_script, args) => {
+        if (!args.length) throw new Error("observation failed");
+        return "";
+      },
+      wait: async () => {},
+    });
+    assert.deepEqual(unavailable, { accepted: true, state: "unavailable" });
+  });
   await test("duplicate guard and archive retry never archive twice", async () => {
     const shell = await nativeFetch(base + "/");
     assert.equal(shell.status, 200);
@@ -935,6 +996,107 @@ try {
         /spotify:track:|desktop123|another-device|Song|Artist/,
       );
     }
+  });
+  await test("accepted Mac probe invalidates the prior Connect queue", async () => {
+    const r = store.session.rotation;
+    const expected = r.items.find((x) => x.key === r.order[r.currentIndex]);
+    const savedWindow = r.queuedWindow;
+    assert.ok(savedWindow);
+    try {
+      const result = await probeMacRotationTrack(r, expected.uri, {
+        run: async (_script, args) => {
+          if (!args.length) {
+            assert.equal(r.queuedWindow, undefined);
+            throw new Error("Spotify observation unavailable");
+          }
+          return "";
+        },
+        wait: async () => {},
+      });
+      assert.deepEqual(result, { accepted: true, state: "unavailable" });
+      assert.equal(r.queuedWindow, undefined);
+    } finally {
+      r.queuedWindow = savedWindow;
+      save();
+    }
+  });
+  await test("Mac local probe is unavailable outside the packaged Mac app", async () => {
+    const cookie = `rotation_session=${store.session.id}.${(await import("../dist/store.js")).sign(store.session.id)}`;
+    const session = await request(
+      "/api/session",
+      "GET",
+      undefined,
+      undefined,
+      cookie,
+    );
+    assert.equal(session.body.macLocalProbeAvailable, undefined);
+    const r = store.session.rotation;
+    const itemKey = r.order[r.currentIndex];
+    const noCsrf = await request(
+      "/api/playback/mac-probe",
+      "POST",
+      { itemKey },
+      undefined,
+      cookie,
+    );
+    assert.equal(noCsrf.body.error.code, "csrf");
+    const denied = await request(
+      "/api/playback/mac-probe",
+      "POST",
+      { itemKey },
+      store.session.csrf,
+      cookie,
+    );
+    assert.equal(denied.status, 404);
+    assert.equal(denied.body.error.code, "mac_local_unavailable");
+  });
+  await test("overlapping playback mutations return 409 while Spotify play is pending", async () => {
+    const cookie = `rotation_session=${store.session.id}.${(await import("../dist/store.js")).sign(store.session.id)}`;
+    const r = store.session.rotation;
+    const item = r.items.find((x) => x.key === r.order[r.currentIndex]);
+    currentPlayback = null;
+    deviceEntries = null;
+    let started;
+    let release;
+    const began = new Promise((resolve) => {
+      started = resolve;
+    });
+    const resume = new Promise((resolve) => {
+      release = resolve;
+    });
+    heldPlay = { started, resume };
+    const first = request(
+      "/api/playback",
+      "PUT",
+      { deviceId: "device12345", uri: item.uri },
+      store.session.csrf,
+      cookie,
+    );
+    try {
+      await began;
+      const second = await request(
+        "/api/playback",
+        "PUT",
+        { deviceId: "device12345", uri: item.uri },
+        store.session.csrf,
+        cookie,
+      );
+      assert.equal(second.status, 409);
+      assert.equal(second.body.error.code, "operation_in_progress");
+      const navigate = await request(
+        "/api/rotation/navigate",
+        "POST",
+        { direction: "next", deviceId: "device12345" },
+        store.session.csrf,
+        cookie,
+      );
+      assert.equal(navigate.status, 409);
+      assert.equal(navigate.body.error.code, "operation_in_progress");
+    } finally {
+      release();
+      heldPlay = null;
+    }
+    assert.equal((await first).status, 200);
   });
   await test("OAuth reconnect requires new scope and preserves only same-account settings", async () => {
     store.session.grantedScopes = undefined;
