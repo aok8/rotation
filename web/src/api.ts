@@ -11,6 +11,7 @@ export type Session = {
   authenticated: boolean;
   desktop?: boolean;
   macLocalProbeAvailable?: boolean;
+  macLocalAvailable?: boolean;
   account?: {
     display_name?: string;
     name?: string;
@@ -54,6 +55,17 @@ export type ConnectPlayback = {
   positionMs: number;
   durationMs: number;
   isPlaying: boolean;
+};
+export type MacPlayback = {
+  active: boolean;
+  state: "playing" | "paused" | "idle" | "other_track" | "unavailable";
+  uri: string | null;
+  positionMs: number;
+  durationMs: number;
+  observedAtMs: number;
+  currentIndex: number;
+  autoAdvance: boolean;
+  reason?: string;
 };
 export type ApiError = Error & {
   status?: number;
@@ -107,6 +119,8 @@ export function describeError(error: unknown) {
     return "Spotify took too long to respond. Refresh playback, then try again.";
   if (e?.code === "reauthorization_required")
     return "Spotify needs updated playback permission. Reconnect your account to continue.";
+  if (e?.code === "mac_automation_denied")
+    return "Allow Rotation to control Spotify in macOS System Settings → Privacy & Security → Automation, then try again.";
   if (e?.status === 401)
     return "Your Spotify connection expired. Please sign in again.";
   if (e?.status === 403)

@@ -7,6 +7,7 @@ import {
   type ApiError,
   type ConnectDevice,
   type ConnectPlayback,
+  type MacPlayback,
   type Playlist,
   type Rotation,
   type Session,
@@ -21,6 +22,11 @@ import {
   playbackObservationStillRelevant,
   unconfirmedPlaybackMismatch,
 } from "./connect-state";
+import {
+  macDisplayPosition,
+  macPlaybackAction,
+  macPlaybackMessage,
+} from "./mac-state";
 
 type Notice = { text: string; kind: "ok" | "error" | "info" } | null;
 const formatTime = (ms = 0) => {
@@ -148,6 +154,8 @@ export default function App() {
   const [reauthorizationNeeded, setReauthorizationNeeded] = useState(false);
   const [activeDeviceId, setActiveDeviceId] = useState<string | null>(null);
   const [deviceId, setDeviceId] = useState("");
+  const [outputMode, setOutputMode] = useState<"connect" | "mac">("connect");
+  const [macPlayback, setMacPlayback] = useState<MacPlayback | null>(null);
   const [playback, setPlayback] = useState<ConnectPlayback | null>(null);
   const [playingIntent, setPlayingIntent] = useState(false);
   const [pendingUri, setPendingUri] = useState("");
@@ -163,6 +171,9 @@ export default function App() {
     uncertain: boolean;
   } | null>(null);
   const deviceIdRef = useRef("");
+  const outputModeRef = useRef<"connect" | "mac">("connect");
+  const outputEpochRef = useRef(0);
+  const macCommandEpochRef = useRef(0);
   const requireDeviceSelectionRef = useRef(
     sessionStorage.getItem("rotation-reselect-device") === "yes",
   );
@@ -173,6 +184,7 @@ export default function App() {
   const queuedThroughRef = useRef(-1);
   const refreshingQueueRef = useRef(false);
   const pollingRef = useRef(false);
+  const macPollingRef = useRef(false);
   const nextPollAllowedRef = useRef(0);
   const lastObservedAtRef = useRef(0);
   const lastDeviceRefreshAtRef = useRef(0);
@@ -184,6 +196,79 @@ export default function App() {
   function setIntent(playing: boolean) {
     playingIntentRef.current = playing;
     setPlayingIntent(playing);
+  }
+  function chooseOutput(mode: "connect" | "mac") {
+    outputEpochRef.current += 1;
+    outputModeRef.current = mode;
+    setOutputMode(mode);
+  }
+  function applyMacPlayback(state: MacPlayback) {
+    const currentRotation = rotationRef.current;
+    const selectedUri = currentRotation?.items.find(
+      (item) =>
+        item.key === currentRotation.order[currentRotation.currentIndex],
+    )?.uri;
+    const nextPosition = macDisplayPosition(state, selectedUri, Date.now());
+    setMacPlayback(state);
+    setIntent(state.active && state.state === "playing");
+    setPosition(nextPosition);
+    positionRef.current = nextPosition;
+    setSeekValue(null);
+    setPlayerMessage(macPlaybackMessage(state));
+  }
+  async function refreshMacPlayback() {
+    const epoch = outputEpochRef.current;
+    const commandEpoch = macCommandEpochRef.current;
+    const state = await api<MacPlayback>("/api/playback/mac/state", {
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (
+      outputModeRef.current !== "mac" ||
+      command.current ||
+      outputEpochRef.current !== epoch ||
+      macCommandEpochRef.current !== commandEpoch
+    ) return;
+    if (
+      rotationRef.current &&
+      state.currentIndex !== rotationRef.current.currentIndex
+    ) {
+      const latest = await api<Rotation | null>("/api/rotation", {
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (
+        outputModeRef.current !== "mac" ||
+        command.current ||
+        outputEpochRef.current !== epoch ||
+        macCommandEpochRef.current !== commandEpoch
+      ) return;
+      rotationRef.current = latest;
+      setRotation(latest);
+    }
+    applyMacPlayback(state);
+  }
+  async function reconcileMacAfterCommandFailure() {
+    if (outputModeRef.current !== "mac") return;
+    const epoch = outputEpochRef.current;
+    const [rotationResult, stateResult] = await Promise.allSettled([
+      api<Rotation | null>("/api/rotation", {
+        signal: AbortSignal.timeout(10_000),
+      }),
+      api<MacPlayback>("/api/playback/mac/state", {
+        signal: AbortSignal.timeout(10_000),
+      }),
+    ]);
+    if (outputModeRef.current !== "mac" || outputEpochRef.current !== epoch)
+      return;
+    if (rotationResult.status === "fulfilled") {
+      rotationRef.current = rotationResult.value;
+      setRotation(rotationResult.value);
+    }
+    if (stateResult.status === "fulfilled") applyMacPlayback(stateResult.value);
+    else {
+      setMacPlayback(null);
+      setIntent(false);
+      setPosition(0);
+    }
   }
   useEffect(() => {
     rotationRef.current = rotation;
@@ -252,10 +337,13 @@ export default function App() {
     setRotationLoading(true);
     setRotationError("");
     try {
+      if (outputModeRef.current === "mac")
+        await api("/api/playback/mac/stop", { method: "POST" }).catch(() => {});
       setRotation(
         await api<Rotation>("/api/rotation/start", { method: "POST" }),
       );
       setPlayback(null);
+      setMacPlayback(null);
       setPosition(0);
       setIntent(false);
       setPendingUri("");
@@ -278,6 +366,31 @@ export default function App() {
     if (session?.authenticated && session.settings?.sourceId)
       void loadRotation();
   }, [session?.authenticated, loadRotation]);
+  useEffect(() => {
+    if (!session?.authenticated || !session.macLocalAvailable) return;
+    const epoch = outputEpochRef.current;
+    void (async () => {
+      try {
+        const state = await api<MacPlayback>("/api/playback/mac/state", {
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (
+          !state.active ||
+          outputModeRef.current !== "connect" ||
+          command.current ||
+          outputEpochRef.current !== epoch
+        ) return;
+        chooseOutput("mac");
+        clearConnectAfterMacProbe();
+        const latest = await api<Rotation | null>("/api/rotation");
+        rotationRef.current = latest;
+        setRotation(latest);
+        applyMacPlayback(state);
+      } catch (error) {
+        setNotice({ text: describeError(error), kind: "error" });
+      }
+    })();
+  }, [session?.authenticated, session?.macLocalAvailable]);
   const loadDevices = useCallback(async () => {
     if (deviceRefreshInFlightRef.current) return;
     deviceRefreshInFlightRef.current = true;
@@ -292,6 +405,7 @@ export default function App() {
       }>("/api/playback/devices", {
         signal: AbortSignal.timeout(10_000),
       });
+      if (outputModeRef.current === "mac") return;
       const available = data.devices.filter(
         (device) => device.id && !device.isRestricted,
       );
@@ -366,8 +480,40 @@ export default function App() {
     (rotation?.items.filter((item) => item.uri === current.uri).length ?? 0) >
       1;
   const selectedDevice = devices.find((device) => device.id === deviceId);
-  const canPlay = !!selectedDevice && !selectedDevice.isRestricted;
+  const canPlay =
+    outputMode === "mac"
+      ? !!session?.macLocalAvailable
+      : !!selectedDevice && !selectedDevice.isRestricted;
+  async function useConnectOutput() {
+    if (outputModeRef.current === "connect") return;
+    await run(async () => {
+      await api("/api/playback/mac/stop", {
+        method: "POST",
+        signal: playbackTimeout(),
+      });
+      chooseOutput("connect");
+      setMacPlayback(null);
+      setIntent(false);
+      setPosition(0);
+      setPlayerMessage("Choose a Spotify Connect device, then press Play.");
+      await loadDevices();
+    });
+  }
+  function useMacOutput() {
+    if (
+      !session?.macLocalAvailable ||
+      outputModeRef.current === "mac" ||
+      command.current ||
+      pendingUriRef.current
+    )
+      return;
+    clearConnectAfterMacProbe();
+    chooseOutput("mac");
+    setMacPlayback(null);
+    setPlayerMessage("Press Play to start Rotation in Spotify on this Mac.");
+  }
   function selectDevice(id: string) {
+    outputEpochRef.current += 1;
     requireDeviceSelectionRef.current = !id;
     if (id) sessionStorage.removeItem("rotation-reselect-device");
     else sessionStorage.setItem("rotation-reselect-device", "yes");
@@ -457,6 +603,7 @@ export default function App() {
     window.setTimeout(() => expirePendingIfOverdue(startedAt), 20_100);
   }
   async function play(item: TrackItem, startPosition = 0) {
+    outputEpochRef.current += 1;
     if (!deviceIdRef.current)
       throw new Error("Choose a Spotify device, then try again.");
     const result = await api<{ ok: true; queuedThroughIndex: number }>(
@@ -474,8 +621,50 @@ export default function App() {
     queuedThroughRef.current = result.queuedThroughIndex;
     markPending(item, startPosition);
   }
+  async function startMac(item: TrackItem) {
+    macCommandEpochRef.current += 1;
+    try {
+      const result = await api<{ state: MacPlayback }>(
+        "/api/playback/mac/start",
+        {
+          method: "POST",
+          signal: AbortSignal.timeout(45_000),
+          body: JSON.stringify({ itemKey: item.key }),
+        },
+      );
+      applyMacPlayback(result.state);
+    } catch (error) {
+      await reconcileMacAfterCommandFailure();
+      throw error;
+    }
+  }
   async function togglePlayback() {
     if (!canPlay) return;
+    if (outputModeRef.current === "mac") {
+      const action = macPlaybackAction(macPlayback, current?.uri);
+      if (action === "start") {
+        await start();
+        return;
+      }
+      await run(async () => {
+        macCommandEpochRef.current += 1;
+        try {
+          const result = await api<{ state: MacPlayback }>(
+            "/api/playback/mac/control",
+            {
+              method: "PUT",
+              signal: playbackTimeout(),
+              body: JSON.stringify({ action }),
+            },
+          );
+          applyMacPlayback(result.state);
+        } catch (error) {
+          await reconcileMacAfterCommandFailure();
+          throw error;
+        }
+      });
+      return;
+    }
     if (playingIntent) {
       await run(async () => {
         await api("/api/playback/control", {
@@ -515,7 +704,11 @@ export default function App() {
   async function start() {
     await run(async () => {
       if (!canPlay)
-        throw new Error("Choose an available Spotify device first.");
+        throw new Error(
+          outputModeRef.current === "mac"
+            ? "Mac local playback is unavailable in this installation."
+            : "Choose an available Spotify device first.",
+        );
       const updated =
         rotationRef.current ??
         (await api<Rotation>("/api/rotation/start", { method: "POST" }));
@@ -523,7 +716,10 @@ export default function App() {
       const item = updated.items.find(
         (entry) => entry.key === updated.order[updated.currentIndex],
       );
-      if (item) await play(item);
+      if (item) {
+        if (outputModeRef.current === "mac") await startMac(item);
+        else await play(item);
+      }
     });
   }
   function clearConnectAfterMacProbe() {
@@ -582,9 +778,9 @@ export default function App() {
       });
       const messages = {
         expected_playing:
-          "Spotify on this Mac is playing the selected song. This test does not start the shuffled queue.",
+          "Spotify on this Mac is playing the selected song.",
         expected_paused:
-          "Spotify loaded the selected song but paused. Press Play in Spotify to hear it.",
+          "Spotify loaded the selected song but paused.",
         other_track:
           "Spotify is playing a different song. The selected song was not confirmed.",
         idle: "Spotify reports no local playback. Open Spotify on this Mac and try again.",
@@ -593,18 +789,33 @@ export default function App() {
       };
       if (result.accepted) {
         clearConnectAfterMacProbe();
+        chooseOutput("mac");
         try {
           await reloadRotationAfterMacProbe();
         } catch (error) {
           setMacProbeMessage(
-            `Local test completed, but Rotation could not refresh: ${describeError(error)} Reload the page before normal playback.`,
+            `Local test completed, but Rotation could not refresh: ${describeError(error)} Reload the page before using playback controls.`,
           );
           return;
+        }
+        if (result.state === "expected_playing") {
+          try {
+            await startMac(current);
+            setMacProbeMessage(
+              "This Mac is now playing Rotation. Play, Pause, Next, and Previous use local Mac control.",
+            );
+            return;
+          } catch (error) {
+            setMacProbeMessage(
+              `The one-song test worked, but local Rotation could not start: ${describeError(error)} Press Play to retry.`,
+            );
+            return;
+          }
         }
       }
       setMacProbeMessage(
         result.accepted
-          ? `${messages[result.state]} Choose a device above and press Play to start normal Rotation playback.`
+          ? `${messages[result.state]} Press Play to start local Rotation on this Mac.`
           : "Spotify on this Mac did not accept the playback test. Open Spotify and try again.",
       );
     } catch (error) {
@@ -613,10 +824,11 @@ export default function App() {
         (error as Error).name === "AbortError"
       ) {
         clearConnectAfterMacProbe();
+        chooseOutput("mac");
         try {
           await reloadRotationAfterMacProbe();
           setMacProbeMessage(
-            "The local Mac test timed out, so playback may have changed. Choose a device and press Play to restart normal Rotation playback.",
+            "The local Mac test timed out, so playback may have changed. Check Spotify on this Mac, then press Play to start local Rotation.",
           );
         } catch (refreshError) {
           setMacProbeMessage(
@@ -631,6 +843,12 @@ export default function App() {
     }
   }
   async function pauseAtEnd(removedUri?: string) {
+    if (outputModeRef.current === "mac") {
+      setMacPlayback(null);
+      setIntent(false);
+      setPosition(0);
+      return;
+    }
     if (
       deviceIdRef.current &&
       (playingIntentRef.current || pendingUriRef.current)
@@ -654,6 +872,24 @@ export default function App() {
     );
   }
   async function seekTo(nextPosition: number) {
+    if (outputModeRef.current === "mac") {
+      macCommandEpochRef.current += 1;
+      try {
+        const result = await api<{ state: MacPlayback }>(
+          "/api/playback/mac/seek",
+          {
+            method: "PUT",
+            signal: playbackTimeout(),
+            body: JSON.stringify({ positionMs: nextPosition }),
+          },
+        );
+        applyMacPlayback(result.state);
+      } catch (error) {
+        await reconcileMacAfterCommandFailure();
+        throw error;
+      }
+      return;
+    }
     if (!deviceIdRef.current) throw new Error("Choose a Spotify device first.");
     await api("/api/playback/seek", {
       method: "PUT",
@@ -669,6 +905,33 @@ export default function App() {
     void pollRef.current();
   }
   async function navigate(direction: "next" | "previous", automatic = false) {
+    if (outputModeRef.current === "mac") {
+      if (command.current) return;
+      await run(async () => {
+        macCommandEpochRef.current += 1;
+        if (direction === "previous" && positionRef.current > 3_000) {
+          await seekTo(0);
+          return;
+        }
+        try {
+          const result = await api<{ rotation: Rotation; state: MacPlayback }>(
+            "/api/playback/mac/navigate",
+            {
+              method: "POST",
+              signal: AbortSignal.timeout(45_000),
+              body: JSON.stringify({ direction }),
+            },
+          );
+          rotationRef.current = result.rotation;
+          setRotation(result.rotation);
+          applyMacPlayback(result.state);
+        } catch (error) {
+          await reconcileMacAfterCommandFailure();
+          throw error;
+        }
+      });
+      return;
+    }
     if (!navigationAvailable(pendingUriRef.current, command.current)) {
       if (!automatic && pendingUriRef.current)
         setPlayerMessage(
@@ -785,7 +1048,8 @@ export default function App() {
       );
       if (next && canPlay) {
         try {
-          await play(next);
+          if (outputModeRef.current === "mac") await startMac(next);
+          else await play(next);
         } catch (error) {
           setIntent(false);
           setNotice({
@@ -826,7 +1090,8 @@ export default function App() {
       );
       if (next && canPlay) {
         try {
-          await play(next);
+          if (outputModeRef.current === "mac") await startMac(next);
+          else await play(next);
         } catch (error) {
           setIntent(false);
           setNotice({
@@ -1234,6 +1499,8 @@ export default function App() {
   async function save() {
     if (!sourceId || sourceId === archiveId) return;
     await run(async () => {
+      if (outputModeRef.current === "mac")
+        await api("/api/playback/mac/stop", { method: "POST" }).catch(() => {});
       const result = await api<{
         settings: { sourceId: string; archiveId: string | null };
       }>("/api/settings", {
@@ -1245,6 +1512,7 @@ export default function App() {
       );
       setRotation(null);
       setFailure(null);
+      setMacPlayback(null);
       setPage("player");
       await restartRotation();
       setNotice({ text: "Playlist settings saved.", kind: "ok" });
@@ -1252,12 +1520,16 @@ export default function App() {
   }
   async function logout() {
     await run(async () => {
+      if (outputModeRef.current === "mac")
+        await api("/api/playback/mac/stop", { method: "POST" }).catch(() => {});
       await api("/auth/logout", { method: "POST" });
       setRotation(null);
       setPlaylists([]);
       setDevices([]);
       setDeviceId("");
       deviceIdRef.current = "";
+      chooseOutput("connect");
+      setMacPlayback(null);
       setIntent(false);
       setPlayback(null);
       setCsrfToken();
@@ -1268,6 +1540,8 @@ export default function App() {
   }
   async function quitDesktop() {
     await run(async () => {
+      if (outputModeRef.current === "mac")
+        await api("/api/playback/mac/stop", { method: "POST" }).catch(() => {});
       await api("/api/desktop/quit", { method: "POST" });
       setNotice({
         text: "rotation is closing. You can close this tab.",
@@ -1275,10 +1549,14 @@ export default function App() {
       });
     });
   }
-  const duration = playback?.durationMs || current?.durationMs || 0;
+  const duration =
+    (outputMode === "mac" ? macPlayback?.durationMs : playback?.durationMs) ||
+    current?.durationMs ||
+    0;
   const progress = seekValue ?? position;
   useEffect(() => {
-    if (!session?.authenticated || page !== "player") return;
+    if (!session?.authenticated || page !== "player" || outputMode === "mac")
+      return;
     const poll = (waking = false) => {
       expirePendingIfOverdue();
       if (document.visibilityState !== "visible") return;
@@ -1312,7 +1590,56 @@ export default function App() {
       window.removeEventListener("focus", onWake);
       window.removeEventListener("pageshow", onWake);
     };
-  }, [session?.authenticated, deviceId, page, playingIntent, pendingUri, loadDevices]);
+  }, [session?.authenticated, deviceId, page, playingIntent, pendingUri, loadDevices, outputMode]);
+  useEffect(() => {
+    if (
+      !session?.authenticated ||
+      !session.macLocalAvailable ||
+      page !== "player" ||
+      outputMode !== "mac"
+    )
+      return;
+    const poll = () => {
+      if (
+        document.visibilityState !== "visible" ||
+        command.current ||
+        macPollingRef.current
+      )
+        return;
+      macPollingRef.current = true;
+      void refreshMacPlayback()
+        .catch((error) => setPlayerMessage(describeError(error)))
+        .finally(() => {
+          macPollingRef.current = false;
+        });
+    };
+    poll();
+    const interval = window.setInterval(poll, playingIntent ? 5_000 : 12_000);
+    document.addEventListener("visibilitychange", poll);
+    window.addEventListener("focus", poll);
+    window.addEventListener("pageshow", poll);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", poll);
+      window.removeEventListener("focus", poll);
+      window.removeEventListener("pageshow", poll);
+    };
+  }, [session?.authenticated, session?.macLocalAvailable, page, outputMode, playingIntent]);
+  useEffect(() => {
+    if (outputMode !== "mac" || !playingIntent || page !== "player") return;
+    const interval = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      const limit = rotationRef.current?.items.find(
+        (item) =>
+          item.key ===
+          rotationRef.current?.order[rotationRef.current.currentIndex],
+      )?.durationMs;
+      const next = Math.min(limit || Number.MAX_SAFE_INTEGER, positionRef.current + 1_000);
+      positionRef.current = next;
+      setPosition(next);
+    }, 1_000);
+    return () => window.clearInterval(interval);
+  }, [outputMode, playingIntent, page]);
   return (
     <div className="app">
       <header className="header wrap">
@@ -1542,13 +1869,42 @@ export default function App() {
                 <div className="device-card">
                   <div className="device-card-copy">
                     <p className="eyebrow">Listen on Spotify</p>
-                    <label htmlFor="connect-device">Playback device</label>
+                    {outputMode === "mac" ? (
+                      <strong className="device-heading">This Mac</strong>
+                    ) : (
+                      <label htmlFor="connect-device">Playback device</label>
+                    )}
                     <p>
-                      Choose where Spotify should play your rotation. Audio
-                      plays on that device, not in this browser.
+                      {outputMode === "mac"
+                        ? macPlayback?.active && macPlayback.autoAdvance
+                          ? "Controls Spotify on this Mac. Rotation keeps advancing while this page is in the background."
+                          : "Controls Spotify on this Mac. Press Play to start the shuffled Rotation order."
+                        : "Choose where Spotify should play your rotation. Audio plays on that device, not in this browser."}
                     </p>
                   </div>
-                  <div className="device-controls">
+                  {session.macLocalAvailable && (
+                    <div className="output-modes" role="group" aria-label="Playback output">
+                      <button
+                        type="button"
+                        className={outputMode === "connect" ? "selected" : ""}
+                        aria-pressed={outputMode === "connect"}
+                        onClick={() => void useConnectOutput()}
+                        disabled={busy}
+                      >
+                        Spotify Connect
+                      </button>
+                      <button
+                        type="button"
+                        className={outputMode === "mac" ? "selected" : ""}
+                        aria-pressed={outputMode === "mac"}
+                        onClick={useMacOutput}
+                        disabled={busy || !!pendingUri}
+                      >
+                        This Mac
+                      </button>
+                    </div>
+                  )}
+                  {outputMode === "connect" && <div className={session.macLocalAvailable ? "device-controls full" : "device-controls"}>
                     <select
                       id="connect-device"
                       value={deviceId}
@@ -1577,8 +1933,8 @@ export default function App() {
                     >
                       {devicesLoading ? "Refreshing…" : "Refresh devices"}
                     </button>
-                  </div>
-                  {deviceError && (
+                  </div>}
+                  {outputMode === "connect" && deviceError && (
                     <p className="inline-error" role="alert">
                       {deviceError}{" "}
                       {reauthorizationNeeded && (
@@ -1586,26 +1942,27 @@ export default function App() {
                       )}
                     </p>
                   )}
-                  {!devicesLoading && devices.length === 0 && !deviceError && (
+                  {outputMode === "connect" && !devicesLoading && devices.length === 0 && !deviceError && (
                     <p className="device-help">
                       No Spotify devices found. Open Spotify on your phone,
                       computer, or speaker, then refresh. Some devices may not
                       appear in Spotify Connect.
                     </p>
                   )}
-                  {devices.length > 0 && !deviceId && (
+                  {outputMode === "connect" && devices.length > 0 && !deviceId && (
                     <p className="device-help">
                       Select an available device to enable playback controls.
                     </p>
                   )}
-                  {session.macLocalProbeAvailable && current && (
+                  {session.macLocalProbeAvailable && current &&
+                    !(outputMode === "mac" && macPlayback?.active) && (
                     <div className="mac-probe-callout">
                       <div>
                         <h2>Test Spotify on this Mac</h2>
                         <p>
-                          Plays only the selected song in the Mac desktop app.
-                          The Play control below uses Spotify Connect for the
-                          full shuffled queue.
+                          Tests the selected song in the Mac desktop app. If
+                          Spotify confirms it is playing, Rotation switches to
+                          local Mac controls and keeps your shuffled order.
                         </p>
                       </div>
                       <button
@@ -1707,7 +2064,7 @@ export default function App() {
                           ▮▮▮ &nbsp;{" "}
                           {playingIntent
                             ? "Now playing"
-                            : pendingUri
+                            : outputMode === "connect" && pendingUri
                               ? "Starting"
                               : "Selected track"}{" "}
                           · shuffled
@@ -1728,13 +2085,13 @@ export default function App() {
                         <p className="artist">{artist(current)}</p>
                         <p className="album">{current.album || "Spotify"}</p>
                         <p className="device-context">
-                          Output: {selectedDevice?.name || "No device selected"}
+                          Output: {outputMode === "mac" ? "Spotify on this Mac" : selectedDevice?.name || "No device selected"}
                         </p>
                         <div className="transport">
                           <button
                             aria-label="Previous track"
                             onClick={() => void navigate("previous")}
-                            disabled={!canPlay || !navigationAvailable(pendingUri, busy)}
+                            disabled={!canPlay || (outputMode === "mac" ? busy || macPlaybackAction(macPlayback, current.uri) === "start" : !navigationAvailable(pendingUri, busy))}
                           >
                             ↶
                           </button>
@@ -1742,14 +2099,14 @@ export default function App() {
                             className="play-button"
                             aria-label={playingIntent ? "Pause" : "Play"}
                             onClick={() => void togglePlayback()}
-                            disabled={busy || !canPlay || !!pendingUri}
+                            disabled={busy || !canPlay || (outputMode === "connect" && !!pendingUri)}
                           >
                             {playingIntent ? "Ⅱ" : "▶"}
                           </button>
                           <button
                             aria-label="Next track"
                             onClick={() => void navigate("next")}
-                            disabled={!canPlay || !navigationAvailable(pendingUri, busy)}
+                            disabled={!canPlay || (outputMode === "mac" ? busy || macPlaybackAction(macPlayback, current.uri) === "start" : !navigationAvailable(pendingUri, busy))}
                           >
                             ↷
                           </button>
@@ -1778,8 +2135,9 @@ export default function App() {
                             disabled={
                               !canPlay ||
                               !duration ||
-                              playback?.uri !== current.uri ||
-                              !!pendingUri ||
+                              (outputMode === "mac"
+                                ? !macPlayback?.active || macPlayback.uri !== current.uri
+                                : playback?.uri !== current.uri || !!pendingUri) ||
                               busy
                             }
                             aria-label="Seek within track"
@@ -1801,16 +2159,22 @@ export default function App() {
                         >
                           {playerMessage ||
                             (canPlay
-                              ? `Ready on ${selectedDevice?.name}. Press Play to listen.`
+                              ? outputMode === "mac"
+                                ? "Ready on this Mac. Press Play to listen."
+                                : `Ready on ${selectedDevice?.name}. Press Play to listen.`
                               : "Choose a Spotify device to listen.")}
                         </div>
-                        {canPlay && !playingIntent && !pendingUri && (
+                        {canPlay && !playingIntent && (outputMode === "mac" || !pendingUri) && (
                           <button
                             className="secondary-button start-button"
-                            onClick={() => void start()}
+                            onClick={() => void (outputMode === "mac" ? togglePlayback() : start())}
                             disabled={busy}
                           >
-                            Play on {selectedDevice?.name}
+                            {outputMode === "mac"
+                              ? macPlaybackAction(macPlayback, current.uri) === "resume"
+                                ? "Resume on this Mac"
+                                : "Play on this Mac"
+                              : `Play on ${selectedDevice?.name}`}
                           </button>
                         )}
                         <div className="remove-area">

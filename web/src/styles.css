@@ -254,6 +254,11 @@ p {
   font-weight: 700;
   margin-bottom: 5px;
 }
+.device-card-copy .device-heading {
+  display: block;
+  font-weight: 700;
+  margin-bottom: 5px;
+}
 .device-card-copy p:last-child,
 .device-help {
   color: var(--muted);
@@ -264,6 +269,29 @@ p {
 .device-controls {
   display: flex;
   gap: 8px;
+}
+.device-controls.full {
+  grid-column: 1 / -1;
+}
+.output-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: end;
+}
+.output-modes button {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 9px 12px;
+  font: inherit;
+  cursor: pointer;
+}
+.output-modes button.selected {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 700;
 }
 .device-controls select {
   min-width: 0;
@@ -860,6 +888,9 @@ p {
 @media (max-width: 800px) {
   .device-card {
     grid-template-columns: 1fr;
+  }
+  .output-modes {
+    justify-content: start;
   }
   .player-card {
     grid-template-columns: 1fr;

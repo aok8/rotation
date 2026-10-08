@@ -1,6 +1,6 @@
 # Install rotation on your computer
 
-rotation starts a small local server and opens controls in your default browser. It does not install an always-running service. Open Spotify on the computer, phone, or speaker where you want audio, then choose that device in rotation. Spotify Premium is required for playback control.
+rotation starts a small local server and opens controls in your default browser. It does not install an always-running service. On the packaged Mac app, local output controls Spotify's desktop app on the same Mac through macOS Automation. Windows and Linux use a Spotify Connect device you choose. Spotify Premium is required for playback control.
 
 ## Before first launch
 
@@ -22,13 +22,15 @@ On first launch, rotation shows its local setup page. Enter your Spotify Client 
 
 If you used an older browser-player version, choose **Reconnect Spotify** after updating to grant device and playback-state access. Reconnecting the same Spotify account keeps your saved playlist choices.
 
-On the packaged macOS app, **Try local Mac playback** tests whether rotation can start the currently selected song in the Spotify desktop app. It plays one song only and replaces Spotify's active playback queue; your saved Rotation order stays intact. After the test, choose a Spotify device again and press **Play** to start the shuffled queue. If macOS blocks the test, allow Rotation to control Spotify in **System Settings → Privacy & Security → Automation**, then retry.
+On the packaged macOS app, open Spotify's desktop app on the same Mac and choose **This Mac** as Rotation's output. You can press **Play** to start local output directly. **Try local Mac playback** tests one selected song first; if Spotify confirms that exact song, Rotation switches to local Mac control and adopts it without replaying it. Play, Pause, Next, Previous, and seek then control that Mac. The saved shuffle order stays in Rotation. The test may replace Spotify's current playback. Local output does not require the Mac to appear in the Spotify Connect device list. macOS may ask to let Rotation control Spotify. Allow it, or change a previous denial in **System Settings → Privacy & Security → Automation** and retry. If the test or a control does not confirm the expected song, check Spotify's player and the message in Rotation before trying again. To return to a different device, choose **Spotify Connect**, then explicitly select an available device.
+
+With local Mac output active, Rotation's local server watches Spotify and starts the next selected song after it detects that the current song ended. This watcher runs while Rotation is open, even if the browser tab is hidden or closed; **Quit rotation** stops it. Automatic advance in a downloaded Mac package has not yet been confirmed in a live playback test. Windows and Linux continue to use Spotify Connect and need an available, unrestricted device. The browser itself never plays audio.
 
 ## Launch, quit, and update
 
 Launch rotation when you want to listen. Use **Quit rotation** in the browser to stop it, whether or not you are signed in. Closing the tab alone leaves the local server running; reopen `http://127.0.0.1:3000` to reach Quit. Launching rotation again while it is already running opens the existing local app. No service starts at boot.
 
-For an update, quit rotation, replace the extracted folder or `Rotation.app` with the newer package, and launch it again. Your credentials and listening settings stay in your user profile. Use **Disconnect Spotify** in the app to remove its stored connection before deleting local data.
+For an update, use **Quit rotation** first, verify the old browser page no longer answers at `http://127.0.0.1:3000`, replace the extracted folder or `Rotation.app` with the newer package, and launch it again. On macOS, remove the old app copy from Applications before moving in the new one and open that new copy; an already-running app can otherwise reopen its old process. Your credentials and listening settings stay in your user profile. Use **Disconnect Spotify** in the app to remove its stored connection before deleting local data.
 
 | System | Configuration | Session and settings data |
 | --- | --- | --- |

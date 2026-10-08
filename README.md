@@ -1,6 +1,6 @@
 # rotation
 
-Rotation is a local Spotify playlist curator and remote control. It shuffles a source playlist and lets you clear tracks as you listen on a Spotify device you choose. Optionally choose a history playlist: **Remove and skip** adds the current track to history before removing it from the source. Spotify Premium is required for playback control.
+Rotation is a local Spotify playlist curator and remote control. It shuffles a source playlist and lets you clear tracks as you listen. The packaged Mac app can control Spotify on that Mac through macOS Automation; Windows, Linux, and the source web app use a Spotify Connect device you choose. Optionally choose a history playlist: **Remove and skip** adds the current track to history before removing it from the source. Spotify Premium is required for playback control.
 
 ## Get the desktop app
 
@@ -14,7 +14,7 @@ See [desktop installation instructions](desktop/INSTALL.md) for Windows, macOS, 
 
 If you connected an older browser-player version, choose **Reconnect Spotify** once after updating. Rotation now needs permission to read your available playback devices and current playback state. Reconnecting the same Spotify account keeps the saved playlist choices.
 
-A Spotify Premium account, a Developer app, an available Spotify Connect device, and a source playlist you can edit are required. Open Spotify on a computer, phone, or speaker, then choose that device in Rotation. The optional history playlist must be different from the source and editable. Spotify Development Mode access and limits can change; check the [Spotify migration guide](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide) and your Dashboard.
+A Spotify Premium account, a Developer app, and a source playlist you can edit are required. For the packaged Mac app's local output, install and open the Spotify desktop app on the same Mac, then allow Rotation to control it when macOS asks. For Windows, Linux, or the source web app, open Spotify on a computer, phone, or speaker and choose an available Spotify Connect device in Rotation. The optional history playlist must be different from the source and editable. Spotify Development Mode access and limits can change; check the [Spotify migration guide](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide) and your Dashboard.
 
 ## How it works
 
@@ -22,7 +22,7 @@ The app keeps a stable shuffled order for the listening session. Next and previo
 
 Spotify's [remove endpoint](https://developer.spotify.com/documentation/web-api/reference/remove-items-playlist) accepts an item URI and playlist snapshot, but no occurrence position. **Remove and skip is blocked when the same URI occurs more than once in the source playlist.** Normal skip still works. The app also blocks stale or changed playlist snapshots for review. If Spotify may have accepted an archive add without confirming it, the app asks you to check the archive in Spotify before choosing a recovery action. See the [API decision record](docs/architecture.md).
 
-Spotify provides the metadata and artwork shown in Rotation and plays audio in the selected Spotify app or Connect device. Rotation does not play or store audio. If playback control is unavailable, playlist configuration remains usable.
+Spotify provides the metadata and artwork shown in Rotation and plays audio in its own app or Connect device. Rotation does not play or store audio. On the packaged Mac app, choose **This Mac** and press Play, or use **Try local Mac playback** for a one-song test that enters local control after Spotify confirms the selected song. The local server watches playback while Rotation runs, including when the browser tab is in the background. To use a different device, choose **Spotify Connect** and select it explicitly. Windows, Linux, and source web runs use Connect playback. The Mac-local sequence and automatic advance still need a live packaged-Mac test; do not rely on them for unattended listening yet. If playback control is unavailable, playlist configuration remains usable.
 
 ## Data, updates, and troubleshooting
 
@@ -33,8 +33,9 @@ Replacing the extracted app folder updates the program without deleting your sav
 | Redirect mismatch | Dashboard URI must be exactly `http://127.0.0.1:3000/auth/callback` for the default port. Use `127.0.0.1`, not `localhost`. |
 | Setup says “Refresh setup and try again” after saving credentials | Update to a package built after the Windows setup form fix, then reopen setup and submit again. Older packages could send a browser form request with `Origin: null`. |
 | Spotify login refused | Confirm Developer Dashboard access, app owner eligibility, and current Development Mode limits. |
-| No Spotify device appears or Play/Next are grey | Open Spotify on the intended device, make sure it is online and signed into the same Premium account, start playback there, then return to Rotation or refresh the device list. Check the picker message for a restricted device. Some device models may not appear through Spotify's API. |
-| Device will not play | Confirm Premium and choose a device that is available and unrestricted. If Rotation says the device did not activate, open Spotify on that device, refresh the list, and retry Play. Reconnect Spotify if Rotation reports missing playback permission. If Spotify accepts Play but the selected device stays silent, open `/api/playback/diagnostic` on the same local address in your signed-in browser and share its privacy-safe result when reporting the issue. |
+| No Spotify Connect device appears or Play/Next are grey | On Windows, Linux, or the source web app, open Spotify on the intended device, make sure it is online and signed into the same Premium account, start playback there, then return to Rotation or refresh the device list. Check the picker message for a restricted device. Some device models may not appear through Spotify's API. On the packaged Mac app, choose local Mac output to use Spotify on that Mac without selecting a Connect device. |
+| Spotify Connect device will not play | Confirm Premium and choose a device that is available and unrestricted. If Rotation says the device did not activate, open Spotify on that device, refresh the list, and retry Play. Reconnect Spotify if Rotation reports missing playback permission. If Spotify accepts Play but the selected device stays silent, open `/api/playback/diagnostic` on the same local address in your signed-in browser and share its privacy-safe result when reporting the issue. |
+| Local Mac playback does not start | Open Spotify on the same Mac. If macOS asks whether Rotation may control Spotify, allow it. Review **System Settings → Privacy & Security → Automation** if permission was denied. The one-song test and local Play must confirm the exact selected track; if confirmation fails, inspect Spotify before retrying. |
 | Mac app does not open a browser tab | Open `http://127.0.0.1:3000` manually. It should show Rotation or the first-run setup page. If the connection is refused, run the app's `Contents/MacOS/Rotation` executable from Terminal and note any error without sharing Spotify credentials. |
 | Playlist cannot be edited | Confirm the account can edit it and granted the playlist modify scope. |
 | Port 3000 is in use | Reopen the existing Rotation tab or quit the other process using that port. |

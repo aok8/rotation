@@ -79,7 +79,7 @@ if (platform === 'darwin') {
   await chmod(macExecutable, 0o755);
   await writeFile(join(output, 'Contents', 'Info.plist'), `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict><key>CFBundleName</key><string>rotation</string><key>CFBundleDisplayName</key><string>rotation</string><key>CFBundleIdentifier</key><string>app.rotation.desktop</string><key>CFBundleVersion</key><string>0.1.0</string><key>CFBundleShortVersionString</key><string>0.1.0</string><key>CFBundleExecutable</key><string>Rotation</string><key>CFBundlePackageType</key><string>APPL</string><key>LSMinimumSystemVersion</key><string>12.0</string><key>LSUIElement</key><true/><key>NSAppleEventsUsageDescription</key><string>rotation uses Automation only when you choose the Mac playback test, to play the selected song in Spotify.</string></dict></plist>
+<plist version="1.0"><dict><key>CFBundleName</key><string>rotation</string><key>CFBundleDisplayName</key><string>rotation</string><key>CFBundleIdentifier</key><string>app.rotation.desktop</string><key>CFBundleVersion</key><string>0.1.0</string><key>CFBundleShortVersionString</key><string>0.1.0</string><key>CFBundleExecutable</key><string>Rotation</string><key>CFBundlePackageType</key><string>APPL</string><key>LSMinimumSystemVersion</key><string>12.0</string><key>LSUIElement</key><true/><key>NSAppleEventsUsageDescription</key><string>Rotation uses Automation when you choose Mac local playback to play and control your selected songs in Spotify.</string></dict></plist>
 `);
   await writeFile(join(output, 'Contents', 'Resources', 'README.txt'), quickStart);
 } else if (platform === 'win32') {

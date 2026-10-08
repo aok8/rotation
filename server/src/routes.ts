@@ -32,6 +32,7 @@ import {
 } from "./rotation.js";
 import type { Operation } from "./types.js";
 import { probeMacRotationTrack } from "./mac-local.js";
+import { MacLocalMode, registerMacLocalMode } from "./mac-mode.js";
 
 let busy = false;
 async function withPlaybackLock<T>(task: () => Promise<T>): Promise<T> {
@@ -49,6 +50,9 @@ async function withPlaybackLock<T>(task: () => Promise<T>): Promise<T> {
   }
 }
 export function registerApiRoutes(app: FastifyInstance) {
+  const macMode = new MacLocalMode({ lock: withPlaybackLock });
+  registerMacLocalMode(macMode);
+  app.addHook("onClose", async () => macMode.deactivate());
   app.get("/api/session", async (req) => {
     const s = sessionFrom(req);
     return s
@@ -60,6 +64,7 @@ export function registerApiRoutes(app: FastifyInstance) {
           ...(desktopMode ? { desktop: true } : {}),
           ...(desktopMode && desktopBuildId ? { desktopBuildId } : {}),
           ...(macLocalProbeAvailable ? { macLocalProbeAvailable: true } : {}),
+          ...(macLocalProbeAvailable ? { macLocalAvailable: true, macLocalActive: macMode.isActiveFor(s) } : {}),
         }
       : desktopMode
         ? {
@@ -103,6 +108,7 @@ export function registerApiRoutes(app: FastifyInstance) {
     if (archiveId) await selected(s, archiveId);
     s.settings = { sourceId, archiveId };
     s.rotation = undefined;
+    macMode.deactivate();
     save();
     return { settings: s.settings };
   });
@@ -147,6 +153,7 @@ export function registerApiRoutes(app: FastifyInstance) {
       source,
       archive,
     };
+    macMode.deactivate();
     save();
     return s.rotation;
   });
@@ -163,8 +170,15 @@ export function registerApiRoutes(app: FastifyInstance) {
       else if (b.direction === "previous")
         nextIndex = Math.max(0, r.currentIndex - 1);
       else throw new AppError("invalid_direction", "Choose previous or next.");
+      if (b.deviceId === undefined && macMode.isActiveFor(s))
+        throw new AppError(
+          "mac_local_active",
+          "Mac local playback is active. Use its Next or Previous control.",
+          409,
+        );
       if (b.deviceId !== undefined) {
         const selectedDevice = deviceId(b.deviceId);
+        macMode.deactivate();
         if (nextIndex < r.order.length) {
           await playWindow(s, r, nextIndex, selectedDevice);
         } else {
@@ -244,6 +258,12 @@ export function registerApiRoutes(app: FastifyInstance) {
           409,
         );
       const startingIndex = r.currentIndex;
+      if (macMode.isActiveFor(s))
+        throw new AppError(
+          "mac_local_active",
+          "Mac local playback is active. Use its playback controls.",
+          409,
+        );
       await requireDevice(s, selectedDevice);
       await requireCurrentPlayback(s, selectedDevice, b.uri);
       if (
@@ -334,6 +354,7 @@ export function registerApiRoutes(app: FastifyInstance) {
       }
       const result = await removeCore(s, op, r, item);
       result.queuedWindow = undefined;
+      await macMode.afterRemoval(s, item.uri);
       save();
       return { rotation: result, operationId: op.id };
     } catch (e) {
@@ -394,6 +415,7 @@ export function registerApiRoutes(app: FastifyInstance) {
     try {
       const result = await removeCore(s, op, r, item);
       result.queuedWindow = undefined;
+      await macMode.afterRemoval(s, item.uri);
       save();
       return { rotation: result, operationId: op.id };
     } finally {
@@ -438,10 +460,51 @@ export function registerApiRoutes(app: FastifyInstance) {
       );
     busy = true;
     try {
-      return await probeMacRotationTrack(r, item.uri);
+      macMode.deactivate();
+      const result = await probeMacRotationTrack(r, item.uri);
+      return result;
     } finally {
       busy = false;
     }
+  });
+  function requireMac() {
+    if (!macLocalProbeAvailable)
+      throw new AppError("mac_local_unavailable", "Mac local playback is available only in the packaged Mac app.", 404);
+  }
+  app.get("/api/playback/mac/state", async (req, reply) => {
+    requireMac();
+    reply.header("Cache-Control", "no-store");
+    return macMode.state(requireSession(req));
+  });
+  app.post("/api/playback/mac/start", async (req) => {
+    requireMac();
+    const s = requireSession(req);
+    requireCsrf(req, s);
+    return withPlaybackLock(async () => ({ state: await macMode.start(s, object(req.body).itemKey) }));
+  });
+  app.post("/api/playback/mac/navigate", async (req) => {
+    requireMac();
+    const s = requireSession(req);
+    requireCsrf(req, s);
+    return withPlaybackLock(() => macMode.navigate(s, object(req.body).direction));
+  });
+  app.put("/api/playback/mac/control", async (req) => {
+    requireMac();
+    const s = requireSession(req);
+    requireCsrf(req, s);
+    return withPlaybackLock(async () => ({ state: await macMode.control(s, object(req.body).action) }));
+  });
+  app.put("/api/playback/mac/seek", async (req) => {
+    requireMac();
+    const s = requireSession(req);
+    requireCsrf(req, s);
+    return withPlaybackLock(async () => ({ state: await macMode.seek(s, object(req.body).positionMs) }));
+  });
+  app.post("/api/playback/mac/stop", async (req) => {
+    requireMac();
+    const s = requireSession(req);
+    requireCsrf(req, s);
+    return withPlaybackLock(async () => ({ state: await macMode.stop(s) }));
   });
   app.put("/api/playback/seek", async (req) => {
     const s = requireSession(req);
@@ -461,6 +524,7 @@ export function registerApiRoutes(app: FastifyInstance) {
           "invalid_playback",
           "Choose a position within the active track.",
         );
+      macMode.deactivate();
       await requireDevice(s, selectedDevice);
       await requireCurrentPlayback(s, selectedDevice, item.uri);
       await playbackCommand(
@@ -508,6 +572,7 @@ export function registerApiRoutes(app: FastifyInstance) {
       }
       if (!expectedUri)
         throw new AppError("item_changed", "Choose a Rotation track.", 409);
+      macMode.deactivate();
       await requireDevice(s, selectedDevice);
       await requireCurrentPlayback(s, selectedDevice, expectedUri);
       const command = b.action === "pause" ? "pause" : "play";
@@ -541,6 +606,7 @@ export function registerApiRoutes(app: FastifyInstance) {
           "invalid_playback",
           "Choose a position within the active track.",
         );
+      macMode.deactivate();
       return playWindow(
         s,
         r,

@@ -11,6 +11,7 @@ import { AppError, requireSession, requireCsrf } from "./errors.js";
 import { spotify } from "./spotify.js";
 import { store, save, sign } from "./store.js";
 import type { Session } from "./types.js";
+import { deactivateMacLocalMode } from "./mac-mode.js";
 
 const pendingAuth = new Map<string, { verifier: string; expires: number }>();
 const loginAttempts: number[] = [];
@@ -115,6 +116,7 @@ export function registerAuthRoutes(app: FastifyInstance) {
         s.rotation = old.rotation;
         s.operations = old.operations;
       }
+      deactivateMacLocalMode();
       store.session = s;
       save();
       reply.setCookie("rotation_session", `${s.id}.${sign(s.id)}`, {
@@ -130,6 +132,7 @@ export function registerAuthRoutes(app: FastifyInstance) {
   app.post("/auth/logout", async (req, reply) => {
     const s = requireSession(req);
     requireCsrf(req, s);
+    deactivateMacLocalMode();
     delete store.session;
     save();
     reply.clearCookie("rotation_session", { path: "/" });
