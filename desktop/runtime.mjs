@@ -92,12 +92,10 @@ export function childEnvironment({
   webDist,
   port,
   parentEnv = process.env,
-  os = platform(),
-  macPackage = false,
   buildId = null,
 }) {
   const baseUrl = `http://${LOOPBACK}:${port}`;
-  return {
+  const childEnv = {
     ...parentEnv,
     SPOTIFY_CLIENT_ID: config.spotifyClientId,
     SPOTIFY_CLIENT_SECRET: config.spotifyClientSecret,
@@ -110,9 +108,10 @@ export function childEnvironment({
     WEB_DIST_DIR: webDist,
     DESKTOP_MODE: "1",
     DESKTOP_CONTROL_TOKEN: randomBytes(32).toString("hex"),
-    MAC_LOCAL_SPOTIFY_PROBE: os === "darwin" && macPackage ? "1" : "0",
     ROTATION_BUILD_ID: buildId || "",
   };
+  delete childEnv.MAC_LOCAL_SPOTIFY_PROBE;
+  return childEnv;
 }
 
 export function classifyExistingDesktop(session, buildId) {

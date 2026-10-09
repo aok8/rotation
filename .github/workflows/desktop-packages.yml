@@ -59,6 +59,8 @@ jobs:
           npm --prefix web test
           npm --prefix web run build
           node --test desktop/test/*.test.mjs
+          node --test scripts/check-desktop-payload.test.mjs
+          node --test scripts/spotify-player-isolate.test.mjs
       - name: Keep only production server dependencies
         run: npm --prefix server prune --omit=dev
       - name: Stage portable package

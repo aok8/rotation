@@ -10,7 +10,6 @@ export type Settings = { sourceId: string | null; archiveId: string | null };
 export type Session = {
   authenticated: boolean;
   desktop?: boolean;
-  macLocalProbeAvailable?: boolean;
   account?: {
     display_name?: string;
     name?: string;
@@ -39,6 +38,7 @@ export type Rotation = {
   source?: Playlist | string | null;
   archive?: Playlist | string | null;
   queuedWindow?: { startIndex: number; endIndex: number; deviceId: string };
+  playbackConfirmed?: boolean;
 };
 export type ConnectDevice = {
   id: string | null;
@@ -55,12 +55,31 @@ export type ConnectPlayback = {
   durationMs: number;
   isPlaying: boolean;
 };
+export type PlaybackLogEntry = {
+  id: string;
+  at: number;
+  method: string;
+  endpoint: string;
+  status: number | null;
+  elapsedMs: number;
+  errorCode?: string;
+  retryAfter?: number;
+  reason?: string;
+  outcome?: "accepted" | "confirmed";
+};
+export type PlaybackLogs = {
+  buildId: string | null;
+  cooldownUntil: number | null;
+  entries: PlaybackLogEntry[];
+};
 export type ApiError = Error & {
   status?: number;
   operationId?: string;
   code?: string;
   retryAfter?: number;
   partial?: boolean;
+  spotifyStatus?: number;
+  reason?: string;
 };
 
 let csrfToken = "";
@@ -96,6 +115,8 @@ export async function api<T>(
     error.code = body.code ?? body.error?.code;
     error.retryAfter = Number(response.headers.get("Retry-After")) || undefined;
     error.partial = Boolean(body.partial ?? body.error?.partial);
+    error.spotifyStatus = body.spotifyStatus ?? body.error?.spotifyStatus;
+    error.reason = body.reason ?? body.error?.reason;
     throw error;
   }
   return body as T;
@@ -107,6 +128,9 @@ export function describeError(error: unknown) {
     return "Spotify took too long to respond. Refresh playback, then try again.";
   if (e?.code === "reauthorization_required")
     return "Spotify needs updated playback permission. Reconnect your account to continue.";
+  if (e?.code === "playback_cooldown")
+    return `Rotation is waiting before another Spotify command. Try again${e.retryAfter ? ` in about ${e.retryAfter} seconds` : " shortly"}.`;
+  if (e?.reason && e.message) return e.message;
   if (e?.status === 401)
     return "Your Spotify connection expired. Please sign in again.";
   if (e?.status === 403)

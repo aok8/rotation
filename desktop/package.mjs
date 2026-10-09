@@ -19,11 +19,12 @@ if (!['x64', 'arm64'].includes(arch)) throw new Error(`Unsupported architecture:
 const required = [
   'desktop/launcher.mjs',
   'desktop/runtime.mjs',
+  'scripts/spotify-player-isolate.mjs',
   'server/dist/index.js',
   'server/node_modules/fastify/package.json',
   'server/package.json',
   'web/dist/index.html',
-  ...(platform === 'darwin' ? ['desktop/macos/RotationLauncher.swift', 'desktop/macos/Automation.entitlements'] : []),
+  ...(platform === 'darwin' ? ['desktop/macos/RotationLauncher.swift'] : []),
 ];
 for (const path of required) {
   const fullPath = join(projectRoot, path);
@@ -43,10 +44,12 @@ await rm(output, { recursive: true, force: true });
 const appRoot = platform === 'darwin' ? join(output, 'Contents', 'Resources', 'Rotation') : output;
 await mkdir(join(appRoot, 'runtime'), { recursive: true });
 await mkdir(join(appRoot, 'desktop'), { recursive: true });
+await mkdir(join(appRoot, 'scripts'), { recursive: true });
 await mkdir(join(appRoot, 'server'), { recursive: true });
 await mkdir(join(appRoot, 'web'), { recursive: true });
 await cp(join(projectRoot, 'desktop/launcher.mjs'), join(appRoot, 'desktop/launcher.mjs'));
 await cp(join(projectRoot, 'desktop/runtime.mjs'), join(appRoot, 'desktop/runtime.mjs'));
+await cp(join(projectRoot, 'scripts/spotify-player-isolate.mjs'), join(appRoot, 'scripts/spotify-player-isolate.mjs'));
 await cp(join(projectRoot, 'server/dist'), join(appRoot, 'server/dist'), { recursive: true });
 await cp(join(projectRoot, 'server/package.json'), join(appRoot, 'server/package.json'));
 await cp(join(projectRoot, 'server/node_modules'), join(appRoot, 'server/node_modules'), {
@@ -79,7 +82,7 @@ if (platform === 'darwin') {
   await chmod(macExecutable, 0o755);
   await writeFile(join(output, 'Contents', 'Info.plist'), `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict><key>CFBundleName</key><string>rotation</string><key>CFBundleDisplayName</key><string>rotation</string><key>CFBundleIdentifier</key><string>app.rotation.desktop</string><key>CFBundleVersion</key><string>0.1.0</string><key>CFBundleShortVersionString</key><string>0.1.0</string><key>CFBundleExecutable</key><string>Rotation</string><key>CFBundlePackageType</key><string>APPL</string><key>LSMinimumSystemVersion</key><string>12.0</string><key>LSUIElement</key><true/><key>NSAppleEventsUsageDescription</key><string>rotation uses Automation only when you choose the Mac playback test, to play the selected song in Spotify.</string></dict></plist>
+<plist version="1.0"><dict><key>CFBundleName</key><string>rotation</string><key>CFBundleDisplayName</key><string>rotation</string><key>CFBundleIdentifier</key><string>app.rotation.desktop</string><key>CFBundleVersion</key><string>0.1.0</string><key>CFBundleShortVersionString</key><string>0.1.0</string><key>CFBundleExecutable</key><string>Rotation</string><key>CFBundlePackageType</key><string>APPL</string><key>LSMinimumSystemVersion</key><string>12.0</string><key>LSUIElement</key><true/></dict></plist>
 `);
   await writeFile(join(output, 'Contents', 'Resources', 'README.txt'), quickStart);
 } else if (platform === 'win32') {
@@ -135,12 +138,11 @@ async function inspect(directory) {
 await inspect(output);
 const manifest = {
   app: 'rotation', platform, arch, nodeVersion, buildId: randomBytes(16).toString('hex'),
-  files: ['desktop/launcher.mjs', 'desktop/runtime.mjs', 'server/dist', 'server/node_modules', 'server/package.json', 'web/dist', `runtime/${runtimeName}`],
+  files: ['desktop/launcher.mjs', 'desktop/runtime.mjs', 'scripts/spotify-player-isolate.mjs', 'server/dist', 'server/node_modules', 'server/package.json', 'web/dist', `runtime/${runtimeName}`],
 };
 await writeFile(join(appRoot, 'build-manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
 if (platform === 'darwin') {
-  const entitlements = join(projectRoot, 'desktop/macos/Automation.entitlements');
-  const sign = (path) => execFileSync('codesign', ['--force', '--sign', '-', '--entitlements', entitlements, path], { stdio: 'inherit' });
+  const sign = (path) => execFileSync('codesign', ['--force', '--sign', '-', path], { stdio: 'inherit' });
   sign(join(appRoot, 'runtime', 'node'));
   sign(join(output, 'Contents', 'MacOS', 'Rotation'));
   sign(output);
