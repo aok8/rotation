@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { env, host, port } from "./config.js";
 import { AppError } from "./errors.js";
+import { SpotifyApiError } from "./spotify.js";
 import { registerAuthRoutes } from "./auth.js";
 import { registerApiRoutes } from "./routes.js";
 
@@ -49,6 +50,10 @@ app.setErrorHandler((error, _req, reply) => {
       code: e.code,
       message: e.message,
       ...(e.operationId ? { operationId: e.operationId } : {}),
+      ...(e instanceof SpotifyApiError ? {
+        spotifyStatus: e.upstreamStatus,
+        ...(e.reason ? { reason: e.reason } : {}),
+      } : {}),
     },
   });
 });

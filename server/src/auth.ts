@@ -11,6 +11,7 @@ import { AppError, requireSession, requireCsrf } from "./errors.js";
 import { spotify } from "./spotify.js";
 import { store, save, sign } from "./store.js";
 import type { Session } from "./types.js";
+import { resetPlayerSession } from "./player-ops.js";
 
 const pendingAuth = new Map<string, { verifier: string; expires: number }>();
 const loginAttempts: number[] = [];
@@ -110,6 +111,7 @@ export function registerAuthRoutes(app: FastifyInstance) {
       const me = await spotify(s, "/me");
       s.user = { id: me.id, name: me.display_name || me.id };
       const old = store.session;
+      if (old) resetPlayerSession(old);
       if (old?.user.id === s.user.id) {
         s.settings = old.settings;
         s.rotation = old.rotation;
@@ -130,6 +132,7 @@ export function registerAuthRoutes(app: FastifyInstance) {
   app.post("/auth/logout", async (req, reply) => {
     const s = requireSession(req);
     requireCsrf(req, s);
+    resetPlayerSession(s);
     delete store.session;
     save();
     reply.clearCookie("rotation_session", { path: "/" });

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { readdir, stat } from "node:fs/promises";
-import { resolve, relative, sep } from "node:path";
+import { readFile, readdir, stat } from "node:fs/promises";
+import { resolve, relative, sep, join } from "node:path";
 
 const root = process.argv[2] && resolve(process.argv[2]);
 if (!root) {
@@ -8,7 +8,7 @@ if (!root) {
   process.exit(2);
 }
 
-const forbiddenNames = new Set(["session.enc", "config.json"]);
+const forbiddenNames = new Set(["session.enc", "config.json", "automation.entitlements"]);
 const forbiddenRoots = new Set(["data", ".local-data", "backups"]);
 const violations = [];
 
@@ -37,6 +37,11 @@ if (!rootStat?.isDirectory()) {
   process.exit(2);
 }
 await visit(root);
+if (root.endsWith(".app")) {
+  const plist = await readFile(join(root, "Contents", "Info.plist"), "utf8").catch(() => "");
+  if (plist.includes("NSAppleEventsUsageDescription"))
+    violations.push("Contents/Info.plist: retired Automation permission");
+}
 if (violations.length) {
   console.error(`Desktop payload contains forbidden private paths:\n${violations.sort().join("\n")}`);
   process.exit(1);

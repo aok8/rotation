@@ -64,7 +64,7 @@ try {
     assert.equal(env.APP_BASE_URL, "http://127.0.0.1:3000");
     assert.equal(env.DESKTOP_MODE, "1");
     assert.equal(env.DESKTOP_CONTROL_TOKEN.length, 64);
-    assert.equal(env.MAC_LOCAL_SPOTIFY_PROBE, "0");
+    assert.equal(env.MAC_LOCAL_SPOTIFY_PROBE, undefined);
     assert.equal(env.ROTATION_BUILD_ID, "");
     const macEnv = childEnvironment({
       config: {
@@ -76,11 +76,9 @@ try {
       webDist: "/app/web/dist",
       port: 3000,
       parentEnv: { MAC_LOCAL_SPOTIFY_PROBE: "1" },
-      os: "darwin",
-      macPackage: true,
       buildId: "c".repeat(32),
     });
-    assert.equal(macEnv.MAC_LOCAL_SPOTIFY_PROBE, "1");
+    assert.equal(macEnv.MAC_LOCAL_SPOTIFY_PROBE, undefined);
     assert.equal(macEnv.ROTATION_BUILD_ID, "c".repeat(32));
     assert.equal(
       classifyExistingDesktop(
@@ -96,22 +94,6 @@ try {
     assert.equal(
       classifyExistingDesktop({ desktop: false }, "c".repeat(32)),
       "foreign",
-    );
-    assert.equal(
-      childEnvironment({
-        config: {
-          spotifyClientId: "client123456",
-          spotifyClientSecret: "secret123456",
-          sessionSecret: "a".repeat(64),
-        },
-        dataDir: "/private/data",
-        webDist: "/app/web/dist",
-        port: 3000,
-        parentEnv: { MAC_LOCAL_SPOTIFY_PROBE: "1" },
-        os: "linux",
-        macPackage: true,
-      }).MAC_LOCAL_SPOTIFY_PROBE,
-      "0",
     );
   });
   await test("launcher rejects another build already serving the loopback port", async () => {

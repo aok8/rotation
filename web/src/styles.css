@@ -282,33 +282,30 @@ p {
   grid-column: 1 / -1;
   margin: 2px 0 0;
 }
-.mac-probe-callout {
+.playback-diagnostics {
   grid-column: 1 / -1;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 12px 20px;
+  gap: 10px 18px;
   border-top: 1px solid var(--border);
-  padding-top: 15px;
+  padding-top: 14px;
   margin-top: 8px;
 }
-.mac-probe-callout > div {
-  flex: 1 1 300px;
+.playback-diagnostics > div {
+  flex: 1 1 270px;
+  min-width: 0;
 }
-.mac-probe-callout h2 {
-  margin: 0 0 3px;
-  font-size: 15px;
-}
-.mac-probe-callout p {
-  margin: 0;
-  color: var(--muted);
+.playback-diagnostics strong {
   font-size: 13px;
-  line-height: 1.5;
 }
-.mac-probe-callout .mac-probe-result {
-  flex-basis: 100%;
-  color: var(--text);
+.playback-diagnostics p {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 .player-layout {
   padding-bottom: 90px;

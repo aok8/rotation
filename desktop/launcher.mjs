@@ -95,10 +95,6 @@ async function main() {
     options.appRoot || dirname(dirname(fileURLToPath(import.meta.url))),
   );
   const { server, webDist } = packagedPaths(appRoot);
-  const macPackage =
-    process.platform === "darwin" &&
-    /\.app\/Contents\/Resources\/Rotation$/.test(appRoot) &&
-    existsSync(resolve(appRoot, "build-manifest.json"));
   const buildId = await packagedBuildId(appRoot);
   const paths = userPaths();
   const configDir = resolve(options.configDir || paths.configDir);
@@ -147,7 +143,6 @@ async function main() {
         dataDir,
         webDist,
         port: options.port,
-        macPackage,
         buildId,
       }),
       stdio: ["ignore", "inherit", "inherit", "ipc"],

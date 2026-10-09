@@ -37,12 +37,20 @@ export function navigationAvailable(
   return !pendingUri && !commandInFlight;
 }
 
+export function pendingPollDelay(attempt: number): number {
+  return Math.min(8_000, 2_000 * 2 ** Math.max(0, attempt));
+}
+
 export function playbackObservationStillRelevant(
   requestedDeviceId: string,
   selectedDeviceId: string,
   commandInFlight: boolean,
+  requestedEpoch = 0,
+  currentEpoch = 0,
 ) {
-  return !commandInFlight && requestedDeviceId === selectedDeviceId;
+  return !commandInFlight &&
+    requestedDeviceId === selectedDeviceId &&
+    requestedEpoch === currentEpoch;
 }
 
 export function unconfirmedPlaybackMismatch(
