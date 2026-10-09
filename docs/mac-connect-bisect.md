@@ -4,7 +4,7 @@ This is an opt-in live test for a Mac where the Spotify desktop app appears as a
 
 ## Prepare one run
 
-1. Use a package containing `scripts/spotify-player-isolate.mjs`. Confirm its build identity in Rotation first. Complete Spotify sign-in and choose a source playlist with a harmless test song; `play-one` uses Rotation's saved current song and `play-window` uses its current window of up to 20 songs. Use a disposable playlist if you will later test removal in the app.
+1. Use a package containing `scripts/spotify-player-isolate.mjs`. Confirm its build identity in Rotation first. Complete Spotify sign-in and choose a source playlist with a harmless test song; `play-one` uses Rotation's saved current song and `play-window` uses its current window of up to 20 songs. If upgrading from an earlier package, choose **Reconnect Spotify** with the same account to grant queue-reading permission for Next; your playlist settings are retained. Use a disposable playlist if you will later test removal in the app.
 2. Open Spotify's desktop app on the Mac under the same Premium account. Note whether it is initially idle, paused, or playing; record the macOS and Spotify desktop versions. Check whether Spotify's own web player can control the Mac **before** the test.
 3. Use **Quit rotation** and wait until `http://127.0.0.1:3000/health` no longer answers. The diagnostic refuses to run while Rotation serves port 3000, so an app command cannot overlap it. Keep the Spotify desktop app open.
 4. In Terminal, set the package location. Adjust this path if `Rotation.app` is elsewhere:

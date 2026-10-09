@@ -33,4 +33,5 @@ export const scopes = [
   "playlist-modify-public",
   "user-modify-playback-state",
   "user-read-playback-state",
+  "user-read-currently-playing",
 ].join(" ");

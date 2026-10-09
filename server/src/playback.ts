@@ -231,6 +231,8 @@ export async function skipWithinWindow(
   nextIndex: number,
   selectedDevice: string,
 ) {
+  if (!s.grantedScopes?.includes("user-read-currently-playing"))
+    throw new AppError("reauthorization_required", "Reconnect Spotify to allow queue access for Next.", 403);
   realDevice(selectedDevice);
   const window = r.queuedWindow;
   const byKey = new Map(r.items.map((item) => [item.key, item]));

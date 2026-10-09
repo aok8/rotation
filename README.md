@@ -12,7 +12,7 @@ Rotation runs on your computer while you use it. The launcher starts a small ser
 
 See [desktop installation instructions](desktop/INSTALL.md) for Windows, macOS, and **Arch Linux**. Arch Linux is the required Linux target. Other Linux distributions may work with the portable package but are not part of the supported install target. The packages include Node.js; users do not need to install it. GitHub Actions artifacts are test builds, not signed releases.
 
-If you connected an older browser-player version, choose **Reconnect Spotify** once after updating. Rotation now needs permission to read your available playback devices and current playback state. Reconnecting the same Spotify account keeps the saved playlist choices.
+After updating an older desktop package, choose **Reconnect Spotify** once with the same account. Rotation needs permission to read available devices, playback state, and the upcoming queue for a safe Next action. Reconnecting the same account keeps your saved playlist choices.
 
 A Spotify Premium account, a Developer app, an available Spotify Connect device, and a source playlist you can edit are required. Open Spotify on a computer, phone, or speaker, then choose that device in Rotation. The optional history playlist must be different from the source and editable. Spotify Development Mode access and limits can change; check the [Spotify migration guide](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide) and your Dashboard.
 

@@ -594,6 +594,11 @@ try {
       is_playing: true, shuffle_state: false, repeat_state: "off" };
     const play = await request("/api/playback", "PUT", { deviceId: "device12345", uri: first.uri }, csrf, cookie);
     assert.equal(play.body.queuedThroughIndex, 1);
+    store.session.grantedScopes = store.session.grantedScopes.filter((scope) => scope !== "user-read-currently-playing");
+    const oldGrant = await request("/api/rotation/navigate", "POST", { direction: "next", deviceId: "device12345" }, csrf, cookie);
+    assert.equal(oldGrant.body.error.code, "reauthorization_required");
+    assert.equal(store.session.rotation.currentIndex, 0);
+    store.session.grantedScopes.push("user-read-currently-playing");
     queuedUri = "spotify:track:unexpected";
     const before = playbackCommands.length;
     const refused = await request("/api/rotation/navigate", "POST", { direction: "next", deviceId: "device12345" }, csrf, cookie);
@@ -856,6 +861,7 @@ try {
     await reconnect();
     assert.equal(store.session.settings.sourceId, "source12345");
     assert.ok(store.session.grantedScopes.includes("user-read-playback-state"));
+    assert.ok(store.session.grantedScopes.includes("user-read-currently-playing"));
     userId = "different-user";
     await reconnect();
     assert.equal(store.session.user.id, "different-user");
