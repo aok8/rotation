@@ -14,6 +14,7 @@ import {
   type TrackItem,
 } from "./api";
 import {
+  canResumeObservedTrack,
   classifyRemotePlayback,
   chooseConnectDevice,
   findForwardMatch,
@@ -154,6 +155,10 @@ export default function App() {
   const [reauthorizationNeeded, setReauthorizationNeeded] = useState(false);
   const [activeDeviceId, setActiveDeviceId] = useState<string | null>(null);
   const [deviceId, setDeviceId] = useState("");
+  const [activation, setActivation] = useState<{
+    deviceId: string;
+    status: "accepted" | "active";
+  } | null>(null);
   const [playback, setPlayback] = useState<ConnectPlayback | null>(null);
   const [playingIntent, setPlayingIntent] = useState(false);
   const [pendingUri, setPendingUri] = useState("");
@@ -335,6 +340,15 @@ export default function App() {
       setActiveDeviceId(data.activeDeviceId);
       setDeviceId(chosen);
       deviceIdRef.current = chosen;
+      setActivation((previous) =>
+        previous?.deviceId === chosen
+          ? data.activeDeviceId === chosen
+            ? { deviceId: chosen, status: "active" }
+            : previous.status === "active"
+              ? null
+              : previous
+          : null,
+      );
       if (chosen !== previous) {
         setIntent(false);
         setPlayback(null);
@@ -345,7 +359,7 @@ export default function App() {
         queuedThroughRef.current = -1;
         setPlayerMessage(
           chosen
-            ? `Spotify device found: ${available.find((device) => device.id === chosen)?.name}. Press Play to listen.`
+            ? `Spotify device found: ${available.find((device) => device.id === chosen)?.name}. Press Play to start the selected song.`
             : previous
               ? "The selected Spotify device is no longer available. Choose another device or refresh devices."
               : "No available Spotify device yet. Open Spotify on a device, then refresh.",
@@ -431,6 +445,7 @@ export default function App() {
     if (id) sessionStorage.removeItem("rotation-reselect-device");
     else sessionStorage.setItem("rotation-reselect-device", "yes");
     setDeviceId(id);
+    setActivation(null);
     deviceIdRef.current = id;
     if (id) sessionStorage.setItem("rotation-connect-device", id);
     else sessionStorage.removeItem("rotation-connect-device");
@@ -443,9 +458,43 @@ export default function App() {
     queuedThroughRef.current = -1;
     setPlayerMessage(
       id
-        ? "Ready to play on the selected Spotify device."
+        ? "Device selected. Press Play to start the selected song, or activate the device first."
         : "Choose a Spotify device to listen.",
     );
+  }
+  async function activateDevice() {
+    const selected = selectedDevice;
+    if (!selected?.id || selected.isRestricted) return;
+    await run(async () => {
+      setPlayerMessage(`Activating ${selected.name} in Spotify…`);
+      const result = await api<{ accepted: true; active: boolean }>(
+        "/api/playback/transfer",
+        {
+          method: "PUT",
+          signal: playbackTimeout(),
+          body: JSON.stringify({ deviceId: selected.id }),
+        },
+      );
+      if (deviceIdRef.current !== selected.id) return;
+      setActivation({
+        deviceId: selected.id,
+        status: result.active ? "active" : "accepted",
+      });
+      setIntent(false);
+      setPlayback(null);
+      setPosition(0);
+      setPendingUri("");
+      pendingUriRef.current = "";
+      unconfirmedUriRef.current = "";
+      queuedThroughRef.current = -1;
+      if (result.active) setActiveDeviceId(selected.id);
+      setPlayerMessage(
+        result.active
+          ? `${selected.name} is active. Press Play to start the selected song.`
+          : `Spotify accepted activation for ${selected.name}, but has not shown it as active yet. Refresh devices, then press Play to try.`,
+      );
+      if (!result.active) void loadDevices();
+    });
   }
   async function run(task: () => Promise<void>) {
     if (command.current) return;
@@ -568,9 +617,12 @@ export default function App() {
         );
       });
     } else if (
-      playback?.uri === current?.uri &&
-      playback.deviceId === deviceIdRef.current &&
-      !pendingUriRef.current
+      canResumeObservedTrack(
+        playback,
+        deviceIdRef.current,
+        current?.uri,
+        pendingUriRef.current,
+      )
     ) {
       await run(async () => {
         await api("/api/playback/control", {
@@ -1561,7 +1613,26 @@ export default function App() {
                     >
                       {devicesLoading ? "Refreshing…" : "Refresh devices"}
                     </button>
+                    {canPlay && activeDeviceId !== deviceId && (
+                      <button
+                        className="secondary-button"
+                        onClick={() => void activateDevice()}
+                        disabled={busy || playbackCoolingDown}
+                      >
+                        Activate device
+                      </button>
+                    )}
                   </div>
+                  {canPlay && (
+                    <p className="device-help" role="status">
+                      {activeDeviceId === deviceId
+                        ? `${selectedDevice?.name} is active. Play starts the selected Rotation song; Resume continues it only when Spotify reports that song paused.`
+                        : activation?.deviceId === deviceId &&
+                            activation.status === "accepted"
+                          ? `Spotify accepted activation for ${selectedDevice?.name}, but it has not confirmed the device is active. Refresh devices to check. You can still press Play to try.`
+                          : `${selectedDevice?.name} is available but not active. Activate device transfers Spotify’s existing playback to this output; Play starts the selected Rotation song.`}
+                    </p>
+                  )}
                   {deviceError && (
                     <p className="inline-error" role="alert">
                       {deviceError}{" "}
@@ -1787,7 +1858,7 @@ export default function App() {
                             ? `Spotify is cooling down. Controls return in about ${cooldownRemaining} seconds.`
                             : playerMessage ||
                             (canPlay
-                              ? `Ready on ${selectedDevice?.name}. Press Play to listen.`
+                              ? `Ready on ${selectedDevice?.name}. Press Play to start the selected song.`
                               : "Choose a Spotify device to listen.")}
                         </div>
                         {canPlay && !playingIntent && !pendingUri && (

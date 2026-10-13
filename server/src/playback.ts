@@ -225,6 +225,54 @@ function stateUri(state: any) {
   return state?.currently_playing_type === "track" && typeof state?.item?.uri === "string"
     ? state.item.uri : null;
 }
+async function observeActiveDevice(s: Session, selectedDevice: string) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt) await delay(300, undefined, { signal: currentPlayerOperation()?.signal });
+    const state = await spotify(s, "/me/player");
+    if (stateDevice(state) === selectedDevice && state?.device?.is_active === true)
+      return state;
+    // Spotify can report 204 for an idle player while the device list already
+    // shows that the requested output became active.
+    if (!state) {
+      const available = await devices(s);
+      if (available.devices.some((device: { id: string | null; isActive: boolean; isRestricted: boolean }) =>
+        device.id === selectedDevice && device.isActive && !device.isRestricted))
+        return { device: { id: selectedDevice, is_active: true } };
+    }
+  }
+  return null;
+}
+
+export async function transferDevice(s: Session, selectedDevice: string) {
+  realDevice(selectedDevice);
+  await requireDevice(s, selectedDevice);
+  const current = await spotify(s, "/me/player");
+  if (stateDevice(current) === selectedDevice && current?.device?.is_active === true)
+    return { accepted: true, active: true };
+  // Transfer is a separate user action. play:false preserves Spotify's current
+  // playing/paused state; explicit Play supplies Rotation's URI afterward.
+  await playbackCommand(s, "/me/player", { device_ids: [selectedDevice], play: false });
+  const observed = await observeActiveDevice(s, selectedDevice);
+  return { accepted: true, active: Boolean(observed) };
+}
+
+async function normalizeQueueModes(s: Session, state: any, selectedDevice: string) {
+  const shuffleOn = state?.shuffle_state === true;
+  const repeatOn = typeof state?.repeat_state === "string" && state.repeat_state !== "off";
+  if (!shuffleOn && !repeatOn) return state;
+  if (shuffleOn)
+    await playbackCommand(s, `/me/player/shuffle?state=false&device_id=${encodeURIComponent(selectedDevice)}`);
+  if (repeatOn)
+    await playbackCommand(s, `/me/player/repeat?state=off&device_id=${encodeURIComponent(selectedDevice)}`);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt) await delay(300, undefined, { signal: currentPlayerOperation()?.signal });
+    const observed = await spotify(s, "/me/player");
+    if (stateDevice(observed) !== selectedDevice || observed?.device?.is_active !== true)
+      throw new AppError("device_activation_failed", "Spotify changed the active device. Select it again before Play.", 409);
+    if (modeSafe(observed)) return observed;
+  }
+  throw new AppError("playback_mode_unconfirmed", "Spotify did not confirm Shuffle and Repeat are off. Try Play again.", 409);
+}
 export async function skipWithinWindow(
   s: Session,
   r: Rotation,
@@ -279,10 +327,8 @@ export async function playWindow(
   const activeTarget = stateDevice(before) === selectedDevice &&
     before?.device?.is_active === true && before?.device?.is_restricted === false;
   if (!activeTarget) await requireDevice(s, selectedDevice);
-  if (activeTarget && before && !modeSafe(before) &&
-      (before.shuffle_state === true || (typeof before.repeat_state === "string" && before.repeat_state !== "off")))
-    throw new AppError("playback_mode", "Turn off Shuffle and Repeat in Spotify, then press Play again.", 409);
-  const verifiedQueue = activeTarget && modeSafe(before);
+  const readyState = activeTarget ? await normalizeQueueModes(s, before, selectedDevice) : before;
+  const verifiedQueue = activeTarget && modeSafe(readyState);
   const byKey = new Map(r.items.map((item) => [item.key, item]));
   const uris = r.order.slice(index, index + (verifiedQueue ? 20 : 1))
     .map((key) => byKey.get(key)?.uri);

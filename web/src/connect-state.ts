@@ -37,6 +37,22 @@ export function navigationAvailable(
   return !pendingUri && !commandInFlight;
 }
 
+// Resume is only safe for the selected song observed paused on the selected
+// device. An accepted Play/transfer command is not an observation.
+export function canResumeObservedTrack(
+  remote: ConnectPlayback | null,
+  selectedDeviceId: string,
+  currentUri: string | undefined,
+  pendingUri: string,
+) {
+  return !!remote &&
+    !pendingUri &&
+    !!currentUri &&
+    remote.deviceId === selectedDeviceId &&
+    remote.uri === currentUri &&
+    !remote.isPlaying;
+}
+
 export function pendingPollDelay(attempt: number): number {
   return Math.min(8_000, 2_000 * 2 ** Math.max(0, attempt));
 }

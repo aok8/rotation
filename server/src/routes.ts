@@ -21,6 +21,7 @@ import {
   playWindow,
   playbackCommand,
   skipWithinWindow,
+  transferDevice,
 } from "./playback.js";
 import { playerLogs, runPlayerOperation } from "./player-ops.js";
 import {
@@ -172,11 +173,12 @@ export function registerApiRoutes(app: FastifyInstance) {
               await skipWithinWindow(s, r, nextIndex, selectedDevice);
               playbackConfirmed = true;
             } catch (error) {
-              if (!(error instanceof AppError) || error.code !== "sync_ambiguous")
+              if (!(error instanceof AppError) ||
+                  (error.code !== "sync_ambiguous" && error.code !== "playback_mode"))
                 throw error;
-              // Spotify's native Next cannot identify an adjacent duplicate URI.
-              // Start the selected occurrence explicitly instead of skipping into
-              // an unknown queue position.
+              // Native Next is unsafe with duplicate URIs or changed playback
+              // modes. Start the selected occurrence explicitly after Play has
+              // normalized known Shuffle and Repeat settings.
               await playWindow(s, r, nextIndex, selectedDevice);
             }
           } else if (b.direction === "previous" ||
@@ -434,6 +436,14 @@ export function registerApiRoutes(app: FastifyInstance) {
   app.get("/api/playback/logs", async (req, reply) => {
     reply.header("Cache-Control", "no-store");
     return playerLogs(requireSession(req));
+  });
+  app.put("/api/playback/transfer", async (req) => {
+    const s = requireSession(req);
+    requireCsrf(req, s);
+    return withPlaybackLock(() => runPlayerOperation(s, async () => {
+      const b = object(req.body);
+      return transferDevice(s, deviceId(b.deviceId));
+    }));
   });
   app.put("/api/playback/seek", async (req) => {
     const s = requireSession(req);

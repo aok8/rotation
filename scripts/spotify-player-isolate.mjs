@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readConfig, userPaths } from '../desktop/runtime.mjs';
 
 const trackUri = /^spotify:track:[A-Za-z0-9]+$/;
-const commands = ['devices', 'state', 'play-one', 'play-window', 'transfer-paused', 'transfer-play', 'shuffle-off', 'repeat-off', 'next'];
+const commands = ['devices', 'state', 'resume', 'play-one', 'play-window', 'play-context', 'transfer-paused', 'transfer-play', 'shuffle-off', 'repeat-off', 'next'];
 
 export function decryptProfile(ciphertext, secret) {
   const buffer = Buffer.from(ciphertext, 'base64');
@@ -24,6 +24,15 @@ export function prepareCall(command, device, rotation) {
   if (command === 'state') return { method: 'GET', path: '/me/player' };
   if (!device) throw new Error('Specify --device-id from the devices result.');
   const query = `device_id=${encodeURIComponent(device)}`;
+  if (command === 'resume') return { method: 'PUT', path: `/me/player/play?${query}` };
+  if (command === 'play-context') {
+    const sourceId = rotation?.source?.id;
+    const currentKey = rotation?.order?.[rotation.currentIndex];
+    const uri = rotation?.items?.find(item => item.key === currentKey)?.uri;
+    if (typeof sourceId !== 'string' || !/^[A-Za-z0-9]{10,64}$/.test(sourceId) || typeof uri !== 'string' || !trackUri.test(uri))
+      throw new Error('Start a Rotation session and quit the app before this test.');
+    return { method: 'PUT', path: `/me/player/play?${query}`, body: { context_uri: `spotify:playlist:${sourceId}`, offset: { uri } } };
+  }
   if (command.startsWith('play-')) {
     const byKey = new Map((rotation?.items || []).map(item => [item.key, item]));
     const uris = rotation?.order?.slice(rotation.currentIndex, rotation.currentIndex + (command === 'play-one' ? 1 : 20)).map(key => byKey.get(key)?.uri);
@@ -77,7 +86,7 @@ async function main() {
     console.log(`One-call Spotify Player isolation. Rotation must be stopped. Uses saved desktop credentials; never prints tokens.
 Usage: node scripts/spotify-player-isolate.mjs --command COMMAND [--device-id ID] [--port 3000]
 Commands: ${commands.join(', ')}
-play-one/play-window use the current saved Rotation track/order. Each run sends exactly one Spotify Player call.
+play-one/play-window use the current saved Rotation track/order. play-context starts that song in the source playlist's Spotify order, not Rotation's shuffled order. resume sends no track body. Each run sends exactly one Spotify Player call.
 First run devices, then test one mutation at a time. Observe Spotify and the official Web Player manually. Stop after a failure; wait or restart Spotify before another call.
 An expired connection requires reopening Rotation, refreshing devices, then Quit. No token refresh or automatic retry is performed here.`);
     return;

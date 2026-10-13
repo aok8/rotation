@@ -41,6 +41,7 @@ let nextUri = null;
 let queuedUri = null;
 let failNext = false;
 let activateOnTransfer = true;
+let modeWritesApply = true;
 let heldPlay = null;
 let userId = "user";
 const track = {
@@ -157,9 +158,9 @@ globalThis.fetch = async (input, init = {}) => {
       held.started();
       await held.resume;
     }
-    if (u.pathname === "/v1/me/player/shuffle" && currentPlayback)
+    if (u.pathname === "/v1/me/player/shuffle" && currentPlayback && modeWritesApply)
       currentPlayback.shuffle_state = u.searchParams.get("state") === "true";
-    if (u.pathname === "/v1/me/player/repeat" && currentPlayback)
+    if (u.pathname === "/v1/me/player/repeat" && currentPlayback && modeWritesApply)
       currentPlayback.repeat_state = u.searchParams.get("state");
     return new Response("device12345", {
       status: 200,
@@ -375,6 +376,17 @@ try {
       cookie,
     );
     assert.deepEqual(paused.body, { ok: true });
+    const resumeStart = playbackCommands.length;
+    const resumed = await request(
+      "/api/playback/control",
+      "PUT",
+      { deviceId: "device12345", action: "resume" },
+      csrf,
+      cookie,
+    );
+    assert.deepEqual(resumed.body, { ok: true });
+    assert.deepEqual(playbackCommands.slice(resumeStart).map((entry) => entry.path), ["/v1/me/player/play"]);
+    assert.equal(playbackCommands.at(-1).body, null, "resume does not start a new URI context");
     const seeked = await request(
       "/api/playback/seek",
       "PUT",
@@ -577,10 +589,74 @@ try {
     assert.equal(active.body.queuedThroughIndex, 1, "known safe modes get ordered window");
     assert.deepEqual(playbackCommands.slice(activeStart).map((x) => x.path), ["/v1/me/player/play"]);
     currentPlayback.shuffle_state = true;
-    const modeBlocked = await request("/api/playback", "PUT", { deviceId: "desktop123", uri: first.uri }, csrf, cookie);
-    assert.equal(modeBlocked.body.error.code, "playback_mode");
+    currentPlayback.repeat_state = "track";
+    const modeStart = playbackCommands.length;
+    const normalized = await request("/api/playback", "PUT", { deviceId: "desktop123", uri: first.uri }, csrf, cookie);
+    assert.equal(normalized.status, 200);
+    assert.deepEqual(playbackCommands.slice(modeStart).map((x) => x.path),
+      ["/v1/me/player/shuffle", "/v1/me/player/repeat", "/v1/me/player/play"]);
+    assert.equal(currentPlayback.shuffle_state, false);
+    assert.equal(currentPlayback.repeat_state, "off");
+    currentPlayback.shuffle_state = true;
+    modeWritesApply = false;
+    const refusedStart = playbackCommands.length;
+    const unconfirmed = await request("/api/playback", "PUT", { deviceId: "desktop123", uri: first.uri }, csrf, cookie);
+    assert.equal(unconfirmed.body.error.code, "playback_mode_unconfirmed");
+    assert.deepEqual(playbackCommands.slice(refusedStart).map((x) => x.path), ["/v1/me/player/shuffle"]);
+    modeWritesApply = true;
     currentPlayback.shuffle_state = false;
     deviceEntries = null;
+  });
+  await test("explicit device transfer is separate from URI Play and does not resume audio", async () => {
+    const cookie = `rotation_session=${store.session.id}.${(await import("../dist/store.js")).sign(store.session.id)}`;
+    const csrf = store.session.csrf;
+    deviceEntries = [
+      { id: "desktop123", name: "Desktop", type: "Computer", is_active: false, is_restricted: false },
+      { id: "phone123", name: "Phone", type: "Smartphone", is_active: true, is_restricted: false },
+    ];
+    currentPlayback = { device: { id: "phone123", is_active: true, is_restricted: false },
+      currently_playing_type: "track", item: track, is_playing: false,
+      shuffle_state: false, repeat_state: "off" };
+    const noCsrf = await request("/api/playback/transfer", "PUT", { deviceId: "desktop123" }, undefined, cookie);
+    assert.equal(noCsrf.status, 403);
+    const before = playbackCommands.length;
+    const transferred = await request("/api/playback/transfer", "PUT", { deviceId: "desktop123" }, csrf, cookie);
+    assert.deepEqual(transferred.body, { accepted: true, active: true });
+    assert.deepEqual(playbackCommands.slice(before).map((x) => x.path), ["/v1/me/player"]);
+    assert.equal(playbackCommands.at(-1).body.play, false);
+    const repeated = await request("/api/playback/transfer", "PUT", { deviceId: "desktop123" }, csrf, cookie);
+    assert.deepEqual(repeated.body, { accepted: true, active: true });
+    assert.equal(playbackCommands.length, before + 1);
+    currentPlayback = null;
+    deviceEntries[0].is_active = false;
+    deviceEntries[1].is_active = true;
+    const idleStart = playbackCommands.length;
+    const idleTransfer = await request("/api/playback/transfer", "PUT", { deviceId: "desktop123" }, csrf, cookie);
+    assert.deepEqual(idleTransfer.body, { accepted: true, active: true }, "idle active device is confirmed by device list");
+    assert.deepEqual(playbackCommands.slice(idleStart).map((x) => x.path), ["/v1/me/player"]);
+    deviceEntries = null;
+  });
+  await test("Next reseeds after normalizing changed modes without native skip", async () => {
+    const cookie = `rotation_session=${store.session.id}.${(await import("../dist/store.js")).sign(store.session.id)}`;
+    const csrf = store.session.csrf;
+    otherTracks = [track, { ...track, uri: "spotify:track:modeNext123" }];
+    const r = (await request("/api/rotation/start", "POST", {}, csrf, cookie)).body;
+    const first = r.items.find((item) => item.key === r.order[0]);
+    const second = r.items.find((item) => item.key === r.order[1]);
+    currentPlayback = { device: { id: "device12345", is_active: true, is_restricted: false },
+      currently_playing_type: "track", item: { ...track, uri: first.uri },
+      is_playing: true, shuffle_state: false, repeat_state: "off" };
+    assert.equal((await request("/api/playback", "PUT", { deviceId: "device12345", uri: first.uri }, csrf, cookie)).status, 200);
+    currentPlayback.shuffle_state = true;
+    currentPlayback.repeat_state = "context";
+    const before = playbackCommands.length;
+    const moved = await request("/api/rotation/navigate", "POST", { direction: "next", deviceId: "device12345" }, csrf, cookie);
+    assert.equal(moved.status, 200);
+    assert.equal(moved.body.currentIndex, 1);
+    assert.equal(moved.body.playbackConfirmed, undefined);
+    assert.deepEqual(playbackCommands.slice(before).map((entry) => entry.path),
+      ["/v1/me/player/shuffle", "/v1/me/player/repeat", "/v1/me/player/play"]);
+    assert.deepEqual(playbackCommands.at(-1).body.uris, [second.uri]);
   });
   await test("native Next checks live queue and confirms before committing index", async () => {
     const cookie = `rotation_session=${store.session.id}.${(await import("../dist/store.js")).sign(store.session.id)}`;

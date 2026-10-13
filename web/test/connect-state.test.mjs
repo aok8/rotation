@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  canResumeObservedTrack,
   classifyRemotePlayback,
   chooseConnectDevice,
   findForwardMatch,
@@ -31,6 +32,14 @@ const classify = (remote, previous = 170_000, nextUri = next) =>
     180_000,
     true,
   );
+
+test("accepted activation or Play cannot masquerade as a paused song to resume", () => {
+  assert.equal(canResumeObservedTrack(null, device, current, ""), false);
+  assert.equal(canResumeObservedTrack(state(current, false), device, current, current), false);
+  assert.equal(canResumeObservedTrack(state(current, false, 0, "phone"), device, current, ""), false);
+  assert.equal(canResumeObservedTrack(state(next, false), device, current, ""), false);
+  assert.equal(canResumeObservedTrack(state(current, false), device, current, ""), true);
+});
 
 test("current playback and an explicit pause retain current app item", () => {
   assert.equal(classify(state(current, true, 171_000)), "current-playing");

@@ -1,6 +1,6 @@
 # One-call Mac Spotify Connect check
 
-This is an opt-in live test for a Mac where the Spotify desktop app appears as a Connect device but a Rotation Play or Next command stalls or stops audio. The owner has reported that behavior; no captured Player API response has yet identified the failing call. The helper included in a new desktop package sends **one Spotify Player API request per invocation**. It does not edit playlists, transfer automatically, retry, or poll for confirmation. An HTTP success means Spotify accepted the request; listen and inspect Spotify to determine whether playback changed.
+This is an opt-in live test for a Mac where the Spotify desktop app appears as a Connect device but a Rotation Play or Next command stalls or stops audio. The owner has reported that behavior; no captured Player API response has yet identified the failing call. Spotifast controlled the same Mac successfully with Spotifast's **default sign-in**, which does not isolate Rotation's different Developer app or grant. The helper included in a new desktop package sends **one Spotify Player API request per invocation**. It does not edit playlists, transfer automatically, retry, or poll for confirmation. An HTTP success means Spotify accepted the request; listen and inspect Spotify to determine whether playback changed.
 
 ## Prepare one run
 
@@ -36,6 +36,8 @@ If the one-song command works, quit and reopen Spotify's desktop app to restore 
 | One command per fresh baseline | Question it answers |
 | --- | --- |
 | `play-window` | Does sending up to 20 saved Rotation URIs behave differently from one URI? |
+| `resume` | Does a bodyless resume of the selected device work when its current song is paused? It does not select Rotation's current URI. |
+| `play-context` | Does playing the saved current song within its source playlist context behave differently from a URI list? It follows the playlist's order, not Rotation's shuffle; use only for diagnosis. |
 | `transfer-paused` | Does `play:false` transfer pause or wedge the desktop app? |
 | `transfer-play` | Does `play:true` transfer activate the intended desktop app? |
 | `shuffle-off` or `repeat-off` | Does one mode change affect the desktop app? Each is a separate call. |

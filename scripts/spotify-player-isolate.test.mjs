@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createCipheriv, createHash } from 'node:crypto';
 import { decryptProfile, prepareCall, safeResponse } from './spotify-player-isolate.mjs';
-const rotation = {currentIndex: 1, items:Array.from({length:25},(_,i)=>({key:String(i),uri:`spotify:track:ITEM${i}`})),order:Array.from({length:25},(_,i)=>String(i))};
+const rotation = {source:{id:'SOURCE12345'},currentIndex: 1, items:Array.from({length:25},(_,i)=>({key:String(i),uri:`spotify:track:ITEM${i}`})),order:Array.from({length:25},(_,i)=>String(i))};
 test('isolation creates exactly one requested call and uses current saved order',()=>{
   assert.deepEqual(prepareCall('next','device',rotation),{method:'POST',path:'/me/player/next?device_id=device'});
   assert.deepEqual(prepareCall('play-one','device',rotation).body.uris,['spotify:track:ITEM1']);
@@ -11,6 +11,12 @@ test('isolation creates exactly one requested call and uses current saved order'
   assert.equal(prepareCall('transfer-play','device',rotation).body.play,true);
   assert.throws(()=>prepareCall('next',undefined,rotation));
   assert.throws(()=>prepareCall('play-one','active',rotation));
+});
+test('resume and playlist context isolate different play request shapes without added calls',()=>{
+  assert.deepEqual(prepareCall('resume','device',rotation),{method:'PUT',path:'/me/player/play?device_id=device'});
+  assert.deepEqual(prepareCall('play-context','device',rotation),{method:'PUT',path:'/me/player/play?device_id=device',body:{context_uri:'spotify:playlist:SOURCE12345',offset:{uri:'spotify:track:ITEM1'}}});
+  assert.throws(()=>prepareCall('play-context','device',{...rotation,source:{id:'bad/path'}}));
+  assert.throws(()=>prepareCall('play-context','device',{...rotation,currentIndex:25}));
 });
 test('shared command output does not contain arbitrary upstream text or playback metadata',()=>{
   const result=safeResponse({error:{status:404,reason:'NO_ACTIVE_DEVICE',message:'No active device found token SECRET device private@example.com'}},'next','device');
