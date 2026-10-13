@@ -122,7 +122,16 @@ export async function spotify(
   if (response.status === 401)
     throw new SpotifyApiError("spotify_auth", "Spotify connection expired. Please sign in again.", 401, 401);
   if (response.status === 204) return null;
-  if (path.startsWith("/me/player/") && init.method === "PUT") return {};
+  // Player commands have no response data contract. Spotify can acknowledge
+  // them with 200 and an empty/non-JSON body; observations confirm playback.
+  const endpoint = path.split("?", 1)[0];
+  const method = (init.method || "GET").toUpperCase();
+  const command = method === "PUT"
+    ? ["/me/player", "/me/player/play", "/me/player/pause", "/me/player/seek",
+       "/me/player/shuffle", "/me/player/repeat", "/me/player/volume"].includes(endpoint)
+    : method === "POST" &&
+      ["/me/player/next", "/me/player/previous", "/me/player/queue"].includes(endpoint);
+  if (command) return {};
   if (response.headers.get("content-type")?.includes("json")) return response.json();
   throw new AppError("spotify_response", "Spotify returned an unexpected response.", 502);
 }

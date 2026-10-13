@@ -40,6 +40,9 @@ let noActivePlay = false;
 let nextUri = null;
 let queuedUri = null;
 let failNext = false;
+let nextReply = null;
+let transferReply = null;
+let invalidQueueReply = false;
 let activateOnTransfer = true;
 let modeWritesApply = true;
 let heldPlay = null;
@@ -105,6 +108,8 @@ globalThis.fetch = async (input, init = {}) => {
       ? response(currentPlayback)
       : new Response(null, { status: 204 });
   }
+  if (u.pathname === "/v1/me/player/queue" && invalidQueueReply)
+    return new Response("not playback data", { status: 200, headers: { "content-type": "text/plain" } });
   if (u.pathname === "/v1/me/player/queue")
     return response({ currently_playing: currentPlayback?.item || null,
       queue: queuedUri ? [{ uri: queuedUri }] : [] });
@@ -117,7 +122,9 @@ globalThis.fetch = async (input, init = {}) => {
       if (currentPlayback)
         currentPlayback.device = { id: body.device_ids[0], is_active: true, is_restricted: false };
     }
-    return new Response(null, { status: 204 });
+    return transferReply
+      ? new Response(transferReply === "text" ? "accepted" : null, { status: 200 })
+      : new Response(null, { status: 204 });
   }
   if (u.pathname === "/v1/me/player/next" && init.method === "POST") {
     playbackCommands.push({ path: u.pathname, deviceId: u.searchParams.get("device_id") });
@@ -127,7 +134,12 @@ globalThis.fetch = async (input, init = {}) => {
     }
     if (nextUri && currentPlayback)
       currentPlayback.item = { ...track, uri: nextUri };
-    return new Response(null, { status: 204 });
+    return nextReply
+      ? new Response(nextReply === "text" ? "accepted" : null, {
+          status: 200,
+          ...(nextReply === "empty-json" ? { headers: { "content-type": "application/json" } } : {}),
+        })
+      : new Response(null, { status: 204 });
   }
   if (
     (u.pathname === "/v1/me/player/pause" ||
@@ -620,6 +632,7 @@ try {
     const noCsrf = await request("/api/playback/transfer", "PUT", { deviceId: "desktop123" }, undefined, cookie);
     assert.equal(noCsrf.status, 403);
     const before = playbackCommands.length;
+    transferReply = "empty";
     const transferred = await request("/api/playback/transfer", "PUT", { deviceId: "desktop123" }, csrf, cookie);
     assert.deepEqual(transferred.body, { accepted: true, active: true });
     assert.deepEqual(playbackCommands.slice(before).map((x) => x.path), ["/v1/me/player"]);
@@ -631,10 +644,12 @@ try {
     deviceEntries[0].is_active = false;
     deviceEntries[1].is_active = true;
     const idleStart = playbackCommands.length;
+    transferReply = "text";
     const idleTransfer = await request("/api/playback/transfer", "PUT", { deviceId: "desktop123" }, csrf, cookie);
     assert.deepEqual(idleTransfer.body, { accepted: true, active: true }, "idle active device is confirmed by device list");
     assert.deepEqual(playbackCommands.slice(idleStart).map((x) => x.path), ["/v1/me/player"]);
     deviceEntries = null;
+    transferReply = null;
   });
   await test("Next reseeds after normalizing changed modes without native skip", async () => {
     const cookie = `rotation_session=${store.session.id}.${(await import("../dist/store.js")).sign(store.session.id)}`;
@@ -690,6 +705,48 @@ try {
     assert.deepEqual(playbackCommands.slice(before).map((entry) => entry.path), ["/v1/me/player/next"]);
     queuedUri = null;
     nextUri = null;
+  });
+  await test("successful non-JSON Next acknowledgements still require observed confirmation", async () => {
+    const cookie = `rotation_session=${store.session.id}.${(await import("../dist/store.js")).sign(store.session.id)}`;
+    const csrf = store.session.csrf;
+    const ops = await import("../dist/player-ops.js");
+    for (const reply of ["empty", "text", "empty-json"]) {
+      otherTracks = [track, { ...track, uri: "spotify:track:next456" }];
+      const r = (await request("/api/rotation/start", "POST", {}, csrf, cookie)).body;
+      const first = r.items.find(item => item.key === r.order[0]);
+      const second = r.items.find(item => item.key === r.order[1]);
+      currentPlayback = { device: { id: "device12345", is_active: true, is_restricted: false },
+        currently_playing_type: "track", item: { ...track, uri: first.uri }, is_playing: true,
+        shuffle_state: false, repeat_state: "off" };
+      await request("/api/playback", "PUT", { deviceId: "device12345", uri: first.uri }, csrf, cookie);
+      queuedUri = second.uri;
+      nextUri = second.uri;
+      nextReply = reply;
+      const before = playbackCommands.length;
+      const moved = await request("/api/rotation/navigate", "POST", { direction: "next", deviceId: "device12345" }, csrf, cookie);
+      assert.equal(moved.status, 200, reply);
+      assert.equal(moved.body.playbackConfirmed, true);
+      assert.equal(moved.body.currentIndex, 1);
+      assert.deepEqual(playbackCommands.slice(before).map(entry => entry.path), ["/v1/me/player/next"]);
+      assert.equal(ops.playerLogs(store.session).cooldownUntil, null);
+
+      // A successful acknowledgement alone must not move Rotation's index.
+      store.session.rotation.currentIndex = 0;
+      currentPlayback.item = { ...track, uri: first.uri };
+      nextUri = null;
+      const unconfirmed = await request("/api/rotation/navigate", "POST", { direction: "next", deviceId: "device12345" }, csrf, cookie);
+      assert.equal(unconfirmed.body.error.code, "playback_unconfirmed");
+      assert.equal(store.session.rotation.currentIndex, 0);
+      assert.equal(ops.playerLogs(store.session).cooldownUntil, null);
+    }
+    nextReply = null;
+    nextUri = null;
+    queuedUri = null;
+    invalidQueueReply = true;
+    try {
+      const { spotify } = await import("../dist/spotify.js");
+      await assert.rejects(spotify(store.session, "/me/player/queue"), error => error.code === "spotify_response");
+    } finally { invalidQueueReply = false; }
   });
   await test("adjacent duplicate URI uses explicit play instead of native Next", async () => {
     const cookie = `rotation_session=${store.session.id}.${(await import("../dist/store.js")).sign(store.session.id)}`;
