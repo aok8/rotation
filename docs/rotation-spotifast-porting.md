@@ -1,0 +1,136 @@
+# Rotation → Spotifast: behavior and porting contract
+
+This is a specification of **Rotation as implemented in this repository**, with a proposed translation into Spotifast. It is not a claim that Spotifast has these features. Rotation's original build brief (`/home/alaink/Downloads/rotation-web-app-build-brief.md`) is a requirements source; where it differs from current code, the difference is called out below. The comparison uses the adjacent Spotifast source as read-only reference. Before implementation, recheck the current Spotify API contract and Spotifast's then-current code.
+
+## Product contract
+
+Rotation lets one Spotify account choose a **source** playlist and an optional, different **history/archive** playlist. The user needs edit access to any playlist Rotation will mutate; the settings save verifies listing/accessibility, while Spotify ultimately enforces write permission at mutation time. Rotation snapshots playable source tracks, shuffles their *occurrences* once into a saved order, and presents one current item plus an upcoming preview. Play, pause, seek, Next, and Previous control a selected Spotify Connect device. **Next and Previous never edit playlists.** “Remove and skip” archives the current URI first when history is configured, deletes it from source only after a safe uniqueness check, and advances only after source deletion succeeds. With history set to None, it deletes only from source. The confirmation text changes with that choice.
+
+The browser UI is a control surface; Spotify supplies metadata/artwork and plays audio on the selected device. There is no browser SDK, local audio renderer, AppleScript, or macOS Automation dependency in the current app. The initial brief requested the Web Playback SDK and exact removal of duplicate occurrences. Both are **superseded or constrained**: the user later requested device playback, and Spotify's current playlist removal request cannot address a specific duplicate occurrence. Rotation blocks destructive removal of a duplicated URI instead of risking deletion of every copy.
+
+### What to preserve during a port
+
+| Invariant | Why it matters |
+| --- | --- |
+| One stable shuffle order, represented by occurrence keys, survives app relaunch and ordinary Next/Previous. | Shuffling a playlist anew on every play would change the listening session. |
+| Source and archive are IDs, not names, and never the same playlist. | Names can change; a self-archive can make a destructive action confusing. |
+| A playback command targets an explicit, unrestricted device and current Rotation URI. | No silent switch to another output or unrelated song. |
+| A successful Spotify write means *accepted*, not audible/confirmed. | The selected Connect device may not start; UI must observe and report uncertainty. |
+| The archive and source mutations are a recoverable state machine. | Spotify has no transaction across two playlists. |
+| Snapshot, current position, and **raw URI count** are checked before deletion. | A duplicate, including an unplayable duplicate, makes URI-only deletion unsafe. |
+| An uncertain archive add is never retried automatically. | Spotify may have committed it before the connection failed. |
+| Native Next commits the index only after observing the expected next track; Play-based reseeds commit after Spotify accepts the command and the frontend then awaits playback confirmation. Removal advances only after delete succeeds. | Preserve the distinction between accepted commands and observed playback; a stronger commit policy is a possible port improvement, not current behavior. |
+
+## Implemented model and persistence
+
+The server model is in [`types.ts`](../server/src/types.ts), [`rotation.ts`](../server/src/rotation.ts), and [`store.ts`](../server/src/store.ts).
+
+| Entity | Fields and ownership |
+| --- | --- |
+| `Settings` | `sourceId` and nullable `archiveId`; server owned. Saving a change clears the current Rotation session. |
+| `Track` | Spotify track URI and display metadata, playlist `position`, and key `position:uri`. Position refers to the **raw** playlist item index before filtering. |
+| `Rotation` | Playable `items`, shuffled `order` of keys, `currentIndex`, source snapshot ID, source/archive metadata, optional submitted `queuedWindow` (`startIndex`, `endIndex`, `deviceId`). Server authoritative; browser does not reshuffle. |
+| `Operation` | ID, time, source/archive IDs, URI/key/snapshot, status and optional error. Statuses: `pending`, `archive_uncertain`, `archived`, `failed`, `complete`. Pruned to the most recent 100 within 30 days. |
+| `Session` | One account ID/name, OAuth access/refresh/expiry/scopes, CSRF token, settings, Rotation and operations. Current server is single-user/single-session. |
+
+`POST /api/rotation/start` pages through source items, excludes local, non-track, malformed, restricted, and explicitly unplayable records, then Fisher–Yates shuffles occurrence keys using Node crypto. It tries to avoid making the previous current key the new first key when there is more than one item. Ordinary reload reads the saved order. A new session or settings change is the explicit reshuffle boundary. Exhausting the order stops; restarting requires an explicit action. Empty or fully cleared source has its own UI state.
+
+The session, tokens, playlist choices, order, and operation log are one AES-256-GCM encrypted JSON file in `DATA_DIR/session.enc`; directory/file permissions are 0700/0600 and saves use a temporary file rename. The key derives from `SESSION_SECRET`. Losing that secret makes the saved state unreadable. Desktop configuration and data live in per-user profile directories outside the package. Disconnect removes the locally saved session and cookie; it does not claim to revoke Spotify's grant remotely. A Spotifast port should use **Spotifast's own account-scoped protected storage and settings**, not import Rotation's encrypted file or maintain a second token store.
+
+## Spotify connection and API surface
+
+Rotation uses server-side Authorization Code + PKCE S256 and a state nonce (`/auth/start`, `/auth/callback`). The callback validates state, exchanges the code, calls `/me`, and sets a signed `HttpOnly`, `SameSite=Lax` cookie (`Secure` on HTTPS). OAuth start is rate limited and the verifier expires. Reauthorization of the same Spotify account retains settings/order/operations; a different account resets them. Mutations require the app session, `X-CSRF-Token`, and matching `Origin` when present. Refresh tokens stay server-side. The exact loopback callback for packaged desktop is `http://127.0.0.1:3000/auth/callback`, registered in the owner's Spotify Developer app.
+
+Current requested scopes are in [`config.ts`](../server/src/config.ts): `playlist-read-private`, `playlist-read-collaborative`, `playlist-modify-public`, `playlist-modify-private`, `user-read-playback-state`, `user-read-currently-playing`, and `user-modify-playback-state`. Missing playback scopes yield `reauthorization_required`. The application Client ID/Secret are entered at first-run setup and stored outside the package; they are never put in frontend storage. Spotify Premium is required for remote playback control. Development Mode eligibility and limits must be checked for the target app.
+
+| Spotify endpoint | Rotation purpose and rule |
+| --- | --- |
+| `GET /me/playlists` | Page by 50, up to 5,000 entries; validate configured IDs against accessible playlists. Listing alone does not prove edit permission. |
+| `GET /playlists/{id}`, `GET /playlists/{id}/items` | Read snapshot and items; page by 50, up to 10,000 raw entries. Filter playable track display separately from raw URI counts. |
+| `POST /playlists/{archive}/items` | Archive one URI first; save uncertain state **before** sending. |
+| `DELETE /playlists/{source}/items` | Send one URI plus prior snapshot ID only after live uniqueness/position/snapshot recheck. No occurrence-position selector. |
+| `GET /me/player/devices`, `GET /me/player` | List/verify Connect target, playback state, mode and selected URI. A null player response is possible. |
+| `PUT /me/player/play`, `/pause`, `/seek`, `/shuffle`, `/repeat`, `POST /me/player/next`, `GET /me/player/queue`, `PUT /me/player` | Device playback; precise decision rules below. |
+
+Rotation's authenticated app routes are implemented in [`routes.ts`](../server/src/routes.ts): `GET /api/session`, `/api/playlists`, `/api/rotation`, `/api/playback/devices`, `/state`, `/diagnostic`, `/logs`; `PUT /api/settings`, `/api/playback`, `/transfer`, `/seek`, `/control`; `POST /api/rotation/start`, `/navigate`, `/sync`, `/remove`, `/retry`. `/health` exposes process health only. The desktop-only `/api/desktop/quit` is separately protected before login and stops the launcher. The exact HTTP routes are **not** required in Spotifast's native UI; preserve their behavior and invariants in its commands/state model.
+
+| App command | Main request → result |
+| --- | --- |
+| `PUT /api/settings` | `{sourceId,archiveId|null}` → saved IDs; rejects equal or inaccessible playlists and invalidates Rotation. |
+| `POST /api/rotation/start` | No body → freshly loaded, shuffled `Rotation`; no audio command. |
+| `POST /api/rotation/navigate` | `{direction:'next'|'previous',deviceId?}` → updated Rotation, optionally `playbackConfirmed:true` after native Next. With no device, only advances/reverses app order. |
+| `POST /api/rotation/sync` | `{deviceId,targetIndex,queuedThroughIndex,uri}` → updated index only if saved window, unique URI, live device and track still agree. This route does not read Spotify's queue. |
+| `POST /api/rotation/remove` | `{itemKey,removeWithoutArchive?}` → `{rotation,operationId}` after guarded mutation, or an error with operation ID for recovery. |
+| `POST /api/rotation/retry` | `{operationId}` → source removal only for an `archived` partial operation. |
+| `PUT /api/playback/transfer` | `{deviceId}` → `{accepted:true,active:boolean}`; no mutation if already active, otherwise one explicit `play:false` transfer and bounded observation. It does not claim Rotation's song started. |
+| `PUT /api/playback` | `{deviceId,uri,positionMs?}` → `{ok:true,queuedThroughIndex}` after Play accepted; browser then confirms observed state. |
+| `PUT /api/playback/control` | `{deviceId,action:'pause'|'resume',uri?}` → `{ok:true}`; `uri` only permits pausing a recently removed item, and resume sends a bodyless Player Play. |
+| `PUT /api/playback/seek` | `{deviceId,positionMs}` → `{ok:true}` after current device/URI and track-duration validation. |
+
+## Playback and queue decision rules
+
+`GET /me/player/devices` surfaces active, restricted, and missing-ID devices. The user chooses an output; the browser remembers that choice in session storage, but this is not the authoritative Spotify state. A device with no usable ID cannot be used as a target. Device selection, transfer, and Play are distinct user actions. Explicit transfer sends `play:false`, so Rotation does not request a resume or supply a new track; Spotify may preserve existing playing/paused state during the transfer. Rotation then checks whether the target became active. Play validates the current Rotation URI and position and uses the chosen device ID.
+
+The current [`playback.ts`](../server/src/playback.ts) Play path reads Spotify player state. If the target is active **and explicitly unrestricted** in that state, it turns Shuffle off and Repeat off **only when either is reported on**, confirms safe modes, then sends up to 20 shuffled URIs starting at `currentIndex`. If target activity or modes are not established, it validates the device and sends a one-song provisional window. A direct Play `404 NO_ACTIVE_DEVICE` is the only automatic transfer fallback: one transfer, one observation, then one retry of the same Play. Other failures do not trigger a chain of speculative commands. A response records the submitted `queuedWindow`; frontend checks the selected device and URI before declaring it playing. This path is under active refinement; recheck final code before porting.
+
+Within a verified multi-song window, manual Next reads current player state, requires the expected device/current URI and Shuffle off/Repeat off, then reads Spotify's queue and requires `queue[0].uri` to equal Rotation's next URI. It sends **one** native skip and confirms the expected next URI/device/playing state in at most two observations before committing `currentIndex`. Adjacent or ambiguous duplicate URIs, changed playback modes, Previous, and window-boundary Next reseed by Play from the intended index instead. A reseed commits the index after the Play request is accepted; the frontend subsequently observes whether playback actually started. A provisional one-song window can expand at a later deliberate Play or Next. End of order pauses only the expected current URI. Navigation without a device ID can alter the saved index but does not claim playback.
+
+The browser polls the selected device more often while starting or playing and less often idle; hidden tabs defer ordinary polls and reconcile on wake. It can advance its saved index through a **uniquely** matching URI inside the submitted window after verifying live device/track state and saved window metadata. The sync route does **not** read Spotify's current queue; only the native Next path does that. Repeated URIs cannot be safely matched to an occurrence by URI alone. There is no background process that refills every 20-song boundary; after a long hidden period the user may need Play/Next to restore Rotation's queue. A manual pause/resume/seek first verifies the selected device and current URI. The frontend suppresses overlapping commands and stale poll results, shows a pending confirmation state, and recovers if Spotify accepted a command but failed to confirm playback. Progress is extrapolated locally between polls.
+
+Explicit activation of an inactive device is optional; the user may instead press Play directly. An activation response with `active:false` prompts Refresh devices and does not set playback intent. `active:true` asks the user to press Play. Resume is offered only when a paused state was **observed** on the selected device with the expected URI. An accepted transfer or provisional Play must not masquerade as that paused state. The 20-second Play confirmation window eventually releases disabled navigation controls and offers recovery even if a browser poll was delayed. Returning from a hidden tab refreshes rather than assuming elapsed time proves playback.
+
+All player operations share a serialized lock and a 10-second deadline; timeout or Spotify 5xx yields a 10-second cooldown, 429 honors `Retry-After`. Authenticated diagnostic logs hold up to 50 sanitized method/endpoint/status/timing/reason entries in memory, with no token, device ID, URI, or response body. Spotify 2xx/204 is acceptance only. **Live native Mac playback remains a reported problem, not a verified success**; mocks and packaged launch tests do not establish audible behavior. [`mac-connect-bisect.md`](mac-connect-bisect.md) provides isolated one-call experiments, including a separate no-body resume and playlist-context Play once the helper commands land.
+
+## Remove and skip: exact safety and recovery
+
+The algorithm is in [`routes.ts`](../server/src/routes.ts) and [`rotation.ts`](../server/src/rotation.ts). The UI displays a confirmation the first time per archive choice and explicitly says whether it will archive. The action is serialized with playback and destructive playlist operations.
+
+1. Require the selected `itemKey` to equal the current saved key. Reload the source playlist and compare its snapshot to the saved snapshot. Count URI occurrences across **all raw items**, including ones filtered out of playback. Require count exactly one and the same raw position. Otherwise return `playlist_changed` or `duplicate_conflict` before an archive write.
+2. Persist a pending operation. With history configured, change it to `archive_uncertain` **before** `POST`ing one URI. Confirmed archive success becomes `archived`; definite rejection leaves source unchanged and exposes an explicit recovery choice. A timeout/ambiguous response remains uncertain: do not auto-add again. The user checks Spotify history and may explicitly choose source removal without another archive add.
+3. Recheck the live source again before deletion. Send `DELETE` with one URI and the saved snapshot. Only a successful delete updates the snapshot, removes the item/key, shifts later raw positions, invalidates the queued window, and advances to the next order slot. The frontend starts that next song only after this succeeds. With history None, skip archive and run the same guarded source removal.
+4. If archive succeeded but source deletion failed, keep an `archived` partial operation and the current item. `POST /api/rotation/retry` accepts its operation ID and retries **source removal only** after safety checks. It never adds to history a second time. If the source is externally changed, ask the user to reload/resolve rather than guess.
+
+Spotify does not provide a cross-playlist transaction or URI occurrence-position deletion in the current `/items` endpoint. The final read and delete are still subject to an external concurrent edit; the snapshot limits stale edits but cannot prove uniqueness at the instant of deletion. Do not “solve” this by rebuilding a whole playlist. Exact deletion of one of several identical URIs was in the initial brief but is **not implemented**. Normal navigation remains available for duplicates.
+
+The distinction among `archive_uncertain`, `archived`, `failed`, and `complete` matters after a crash. `archive_uncertain` is written **before** the POST, so the POST may or may not have been sent or accepted; it is not a synonym for “failed.” `archived` means source still needs deletion. `failed` means a definite early failure was recorded. `complete` means source deletion was confirmed and local order updated. A future Spotifast implementation must persist each transition before it performs an action whose result could be ambiguous, and must surface the recovery choice rather than silently replaying a write.
+
+## User-visible states and failure policy
+
+The UI supports sign-in/reconnect, searchable source/history pickers, None archive, first-run settings, session restart, current/upcoming songs, a light/dark toggle whose **initial** choice follows the OS preference, keyboard focus and reduced motion. There is no separate persistent “system” theme mode. It keeps playlist configuration usable when playback is unavailable. It distinguishes no device, restricted or vanished device, pending Play, selected device/track mismatch, unconfirmed accepted Play, paused/playing, queue mismatch, unsafe Shuffle/Repeat mode, cooldown/rate limit, expired grant, empty playlist, duplicate removal block, and partial/uncertain archive recovery. Next/Previous stay unavailable while a Play confirmation is pending. An error must not imply an item was removed or playback started if only a write was accepted. See [`connect-state.ts`](../web/src/connect-state.ts), [`App.tsx`](../web/src/App.tsx), and [`api.ts`](../web/src/api.ts).
+
+| Error or evidence | Current recovery rule to preserve |
+| --- | --- |
+| `no_device`, `device_gone`, `restricted_device`, missing device ID | Refresh/reselect an unrestricted explicit target; do not silently fall back to “active.” |
+| `reauthorization_required`, `spotify_auth`, `spotify_forbidden` | Reconnect or explain account/permission limits while keeping non-playback setup reachable. |
+| `playback_mismatch`, `queue_mismatch`, `sync_unavailable`, `sync_ambiguous` | Stop guessing current order; inspect state and offer deliberate Play to reseed. |
+| `playback_mode_unconfirmed`, `device_activation_failed`, `playback_unconfirmed` | Explain which observation failed; a write acceptance is not proof of audio or correct queue. |
+| `playback_timeout`, `playback_cooldown`, `rate_limited`, Spotify 5xx | Respect cooldown/`Retry-After`; avoid rapid, overlapping retries. |
+| `duplicate_conflict`, `playlist_changed`, `item_changed` | Block destructive removal and reload/reconfirm source rather than deleting by URI. |
+| `archive_uncertain`, `partial_failure` | Keep current item; offer explicit archive verification or source-only retry as appropriate. |
+
+## Spotifast translation, not a file copy
+
+Spotifast is a Rust native application with an existing Web API gateway, account-scoped grants, local librespot Connect player, remote device controls, playlist/queue UI, and protected credentials. Its connection guide at `/home/alaink/Documents/code/spotifast/docs/_reference/how-it-connects.md`, plus `src/auth.rs`, `src/api/gateway.rs`, `src/api/client.rs`, `src/player.rs`, `src/app.rs`, and `src/model.rs` in that repository are the integration anchors. These are local comparison paths, not dependencies of Rotation.
+
+| Rotation concept | Suggested Spotifast home / adaptation |
+| --- | --- |
+| OAuth, refresh, account identity | Reuse Spotifast's existing grant routing and protected credential store. Its shared, optional personal, and playback grants are independent. Verify same-account identity and required scope (`user-read-currently-playing` may need adding); do not start a Rotation loopback server, duplicate cookies, or reuse Rotation's Client Secret. |
+| Playlist fetch, edit and snapshot | Route through `api/gateway.rs` with the appropriate grant and `api/client.rs` methods for playlist/items/add/remove. Spotifast already exposes `remove_playlist_items(id, uris, snapshot_id)`, but that does **not** make duplicate occurrence removal safe. Preserve Rotation's raw-count/snapshot/position guards. |
+| Persistent settings/order/operations | Add account-scoped Rotation state to Spotifast settings/protected storage with schema migration. Persist operation transitions before network writes, not only after success; reconcile late callbacks and account changes. |
+| Shuffle/queue/player | Add a Rotation-specific state machine in native app model/actions; use existing local player events for Spotifast's own device and Web API observations for remote devices. Avoid fighting Spotifast's general shuffle, repeat, manually queued songs, transfer, and context restoration. Decide explicitly whether Rotation takes temporary queue ownership or uses its own context. |
+| Device and playback commands | Existing `ApiClient::play/pause/next/seek/transfer/queue/set_shuffle/set_repeat` and local `player.rs` commands are candidates. Keep the target, queue, confirmation and serialization guards. Local librespot control can be more direct, but should preserve the same selected-order invariant and clear user feedback. |
+| UI | Add Rotation as an opt-in view/workflow inside Spotifast's native UI, with source/archive selection, current/upcoming order, safe Remove and skip confirmation, and partial/uncertain recovery. Do not replace Spotifast's normal playlist or queue behavior globally. |
+| Desktop/container | Rotation's Node/browser shell, Compose/Docker, launcher, CSRF cookie, and standalone packaging are **deployment details**, not features to port into Spotifast. Spotifast owns its own installers and update system. |
+
+Spotifast's current Web API scopes include playlist read/modify and playback control/state, but the inspected `WEB_SCOPES` list does **not** include `user-read-currently-playing`. Rotation uses that scope to guard native Next via `GET /me/player/queue`. A port must verify the current Spotify requirement and choose whether to request/re-authorize it, use an account-matched existing grant with it, or provide a different safe Next implementation. Spotifast also has its own queue abstraction and can append individual items; appending 20 songs one by one is **not equivalent** to Rotation's submitted 20-URI Play window and may interfere with existing user queue entries. Do not apply the Rotation `queuedWindow` reconciliation rules to a different queue mechanism without new proof/tests.
+
+## Acceptance and test plan for a Spotifast port
+
+1. Define account and grant ownership, storage migration, and whether Rotation controls local librespot, remote Web API, or both. Keep it opt-in and isolated from ordinary Spotifast playback.
+2. Unit-test occurrence shuffle persistence/restart, empty and filtered playlists, source/history equality, and raw duplicate counts (including filtered duplicates). Test stale snapshot and position changes before **any** archive/delete write.
+3. Model the archive operation as a persisted transition table. Test definite add failure, accepted add then delete failure, ambiguous add timeout, app restart at every stage, explicit removal without another archive add, retry source-only, and concurrent playlist edit. Use disposable playlists for live destructive tests.
+4. Test playback with mocked Spotify or local player events: no/vanished/restricted device; transfer and mode changes; accepted Play with no audible confirmation; stale selected track; Shuffle/Repeat drift; queued next mismatch; adjacent duplicate; 20-song boundary; browser/app sleep; pause/seek; terminal item. Assert no extra mutation and no wrong-device command. For parity with Rotation, native Next must confirm before index commit while reseeds commit after accepted Play and surface an unconfirmed state until observation. A port may choose a stronger confirmed-only commit policy, but then must specify rollback and restart behavior.
+5. Test grant/rate-limit errors and account switching, including a late network callback after sign-out. Logs and copied diagnostics must omit bearer tokens, secrets, full response bodies, device IDs and track URIs.
+6. Live-test with an owned Premium account on the target devices, especially Mac Spotify desktop, and record the actual HTTP status and audible result separately. The owner's successful Spotifast controls used Spotifast's default sign-in, **not** Rotation's personal Developer app. That proves the Mac client can respond to controls in at least one grant/app configuration; it does not isolate Rotation's different app registration or prove that its mode changes fix the live stall. Current Rotation automated tests are mocked; a 2xx status and a green CI package are insufficient evidence of native playback. Use the [one-call bisect](mac-connect-bisect.md) when the Mac stalls, without sharing credentials.
+
+The current Rotation checks are `npm --prefix server test`, `npm --prefix server run typecheck`, `npm --prefix web run typecheck`, `npm --prefix server run build`, `npm --prefix web run build`, and `node --test desktop/test/*.test.mjs`. Run these before using Rotation as a behavioral oracle; then add focused Rust state-machine and integration tests in Spotifast. Spotify endpoints, scopes, and policies are changeable; see the [official Web API reference](https://developer.spotify.com/documentation/web-api/reference), [scopes](https://developer.spotify.com/documentation/web-api/concepts/scopes), and [playlist remove endpoint](https://developer.spotify.com/documentation/web-api/reference/remove-items-playlist) when designing the port.

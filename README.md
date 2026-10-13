@@ -55,4 +55,4 @@ node desktop/launcher.mjs
 
 The launcher serves the built web app on port 3000. For web hot reload, run `npm --prefix web run dev` in another terminal and open `http://127.0.0.1:5173`; its API and auth requests proxy to port 3000. Run checks with `npm --prefix server test`, `npm --prefix server run typecheck`, `npm --prefix server run build`, `npm --prefix web run build`, and `node --test desktop/test/*.test.mjs`.
 
-The [architecture](docs/architecture.md), [desktop release checks](docs/desktop-qa.md), and [Spotify QA checklist](docs/qa.md) document implementation decisions and remaining live checks.
+The [architecture](docs/architecture.md), [desktop release checks](docs/desktop-qa.md), [Spotify QA checklist](docs/qa.md), and [Spotifast porting contract](docs/rotation-spotifast-porting.md) document implementation decisions, remaining live checks, and the behavior a future integration should preserve.
