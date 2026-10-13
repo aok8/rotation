@@ -334,8 +334,11 @@ export async function playWindow(
     .map((key) => byKey.get(key)?.uri);
   if (!uris.length || uris.some((uri) => !uri))
     throw new AppError("item_changed", "Refresh the Rotation playlist.", 409);
-  const body: { uris: string[]; position_ms?: number } = { uris: uris as string[] };
-  if (positionMs !== undefined) body.position_ms = positionMs;
+  // The URI window is already sliced to the selected Rotation item. Match
+  // Spotify's explicit list-start shape while keeping our shuffled order.
+  const body: { uris: string[]; offset: { position: number }; position_ms?: number } =
+    { uris: uris as string[], offset: { position: 0 } };
+  if (positionMs !== undefined && positionMs > 0) body.position_ms = positionMs;
   try {
     await playbackCommand(s, `/me/player/play?device_id=${encodeURIComponent(selectedDevice)}`, body);
   } catch (error) {

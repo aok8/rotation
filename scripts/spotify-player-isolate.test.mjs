@@ -6,7 +6,10 @@ const rotation = {source:{id:'SOURCE12345'},currentIndex: 1, items:Array.from({l
 test('isolation creates exactly one requested call and uses current saved order',()=>{
   assert.deepEqual(prepareCall('next','device',rotation),{method:'POST',path:'/me/player/next?device_id=device'});
   assert.deepEqual(prepareCall('play-one','device',rotation).body.uris,['spotify:track:ITEM1']);
+  assert.deepEqual(prepareCall('play-one','device',rotation).body.offset,{position:0});
+  assert.equal('position_ms' in prepareCall('play-one','device',rotation).body,false);
   assert.equal(prepareCall('play-window','device',rotation).body.uris.length,20);
+  assert.deepEqual(prepareCall('play-window','device',rotation).body.offset,{position:0});
   assert.equal(prepareCall('transfer-paused','device',rotation).body.play,false);
   assert.equal(prepareCall('transfer-play','device',rotation).body.play,true);
   assert.throws(()=>prepareCall('next',undefined,rotation));

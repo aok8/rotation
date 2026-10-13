@@ -358,6 +358,7 @@ try {
     assert.equal(play.status, 200);
     assert.equal(play.body.queuedThroughIndex, 0);
     assert.deepEqual(playbackCommands.at(-1).body.uris, [track.uri]);
+    assert.deepEqual(playbackCommands.at(-1).body.offset, { position: 0 });
     assert.equal(playbackCommands.at(-1).body.position_ms, 2000);
     currentPlayback = {
       device: { id: "device12345", is_active: true, is_restricted: false },
@@ -584,6 +585,8 @@ try {
     assert.equal(played.status, 200);
     assert.equal(played.body.queuedThroughIndex, 0, "inactive target gets provisional one-URI window");
     assert.deepEqual(playbackCommands.slice(before).map((x) => x.path), ["/v1/me/player/play"]);
+    assert.deepEqual(playbackCommands.at(-1).body.offset, { position: 0 });
+    assert.equal(Object.hasOwn(playbackCommands.at(-1).body, "position_ms"), false);
     assert.equal(deviceEntries[0].is_active, false, "no speculative transfer");
 
     noActivePlay = true;
@@ -671,7 +674,11 @@ try {
     assert.equal(moved.body.playbackConfirmed, undefined);
     assert.deepEqual(playbackCommands.slice(before).map((entry) => entry.path),
       ["/v1/me/player/shuffle", "/v1/me/player/repeat", "/v1/me/player/play"]);
-    assert.deepEqual(playbackCommands.at(-1).body.uris, [second.uri]);
+    assert.deepEqual(playbackCommands.at(-1).body, { uris: [second.uri], offset: { position: 0 } });
+    const previous = await request("/api/rotation/navigate", "POST", { direction: "previous", deviceId: "device12345" }, csrf, cookie);
+    assert.equal(previous.status, 200);
+    assert.equal(previous.body.currentIndex, 0);
+    assert.deepEqual(playbackCommands.at(-1).body, { uris: [first.uri, second.uri], offset: { position: 0 } });
   });
   await test("native Next checks live queue and confirms before committing index", async () => {
     const cookie = `rotation_session=${store.session.id}.${(await import("../dist/store.js")).sign(store.session.id)}`;
@@ -765,6 +772,7 @@ try {
     assert.equal(result.body.playbackConfirmed, undefined);
     assert.deepEqual(playbackCommands.slice(before).map((entry) => entry.path), ["/v1/me/player/play"]);
     assert.equal(playbackCommands.at(-1).body.uris[0], track.uri);
+    assert.deepEqual(playbackCommands.at(-1).body.offset, { position: 0 });
     assert.equal(store.session.rotation.currentIndex, 1);
   });
   await test("fallback refuses unconfirmed transfer without a second play", async () => {

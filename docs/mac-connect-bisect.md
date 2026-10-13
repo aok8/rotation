@@ -1,6 +1,6 @@
 # One-call Mac Spotify Connect check
 
-This is an opt-in live test for a Mac where the Spotify desktop app appears as a Connect device but a Rotation Play or Next command stalls or stops audio. The owner has reported that behavior; no captured Player API response has yet identified the failing call. Spotifast controlled the same Mac successfully with Spotifast's **default sign-in**, which does not isolate Rotation's different Developer app or grant. The helper included in a new desktop package sends **one Spotify Player API request per invocation**. It does not edit playlists, transfer automatically, retry, or poll for confirmation. An HTTP success means Spotify accepted the request; listen and inspect Spotify to determine whether playback changed.
+This is an opt-in live test for a Mac where the Spotify desktop app appears as a Connect device but a Rotation Play or Next command stalls or stops audio. The owner has reported that behavior; a later Rotation diagnostic showed the selected Mac active with Shuffle and Repeat off, yet no current track item across repeated successful player-state reads. Spotifast started a newly selected track on the same Mac using Spotifast's **default sign-in**, even after Rotation failed. That does not isolate Rotation's different Developer app/grant or its request body. The helper included in a new desktop package sends **one Spotify Player API request per invocation**. It does not edit playlists, transfer automatically, retry, or poll for confirmation. An HTTP success means Spotify accepted the request; listen and inspect Spotify to determine whether playback changed.
 
 ## Prepare one run
 
@@ -14,6 +14,8 @@ This is an opt-in live test for a Mac where the Spotify desktop app appears as a
    ```
 
 The helper reads the existing local Rotation connection from your user profile. It does not need an access token, Client Secret, or session file on the command line. **Never paste those secrets, a full config file, a session file, or raw Spotify device IDs into an issue or chat.** Keep the helper's output local until you have reviewed it; share only the build ID, command name, sanitized status/error, elapsed time, and what happened in Spotify.
+
+In a package with the payload parity change, `play-one` and `play-window` send their saved URI list with `offset:{position:0}` and no zero `position_ms`, matching Rotation's current Play shape. This isolates the list-start command, not Spotifast's OAuth grant. `play-context` is a separate diagnostic shape that follows the source playlist's order; do not substitute it for Rotation's shuffled queue.
 
 ## Choose one call
 

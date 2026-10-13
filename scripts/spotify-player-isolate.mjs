@@ -38,7 +38,7 @@ export function prepareCall(command, device, rotation) {
     const uris = rotation?.order?.slice(rotation.currentIndex, rotation.currentIndex + (command === 'play-one' ? 1 : 20)).map(key => byKey.get(key)?.uri);
     if (!uris?.length || uris.some(uri => typeof uri !== 'string' || !trackUri.test(uri)))
       throw new Error('Start a Rotation session and quit the app before this test.');
-    return { method: 'PUT', path: `/me/player/play?${query}`, body: { uris } };
+    return { method: 'PUT', path: `/me/player/play?${query}`, body: { uris, offset: { position: 0 } } };
   }
   if (command.startsWith('transfer-')) return { method: 'PUT', path: '/me/player', body: { device_ids: [device], play: command === 'transfer-play' } };
   if (command === 'next') return { method: 'POST', path: `/me/player/next?${query}` };
