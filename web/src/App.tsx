@@ -7,6 +7,8 @@ import {
   type ApiError,
   type ConnectDevice,
   type ConnectPlayback,
+  type PlaybackCheckAction,
+  type PlaybackCheckState,
   type PlaybackLogs,
   type Playlist,
   type Rotation,
@@ -155,6 +157,15 @@ export default function App() {
   const [reauthorizationNeeded, setReauthorizationNeeded] = useState(false);
   const [activeDeviceId, setActiveDeviceId] = useState<string | null>(null);
   const [deviceId, setDeviceId] = useState("");
+  const [checkOpen, setCheckOpen] = useState(false);
+  const [checkResult, setCheckResult] = useState<{
+    text: string;
+    checkedAt: number;
+    state?: PlaybackCheckState;
+  } | null>(null);
+  const [checkError, setCheckError] = useState("");
+  const [checkPending, setCheckPending] = useState<"command" | "read" | null>(null);
+  const [requiresRotationPlay, setRequiresRotationPlay] = useState(false);
   const [activation, setActivation] = useState<{
     deviceId: string;
     status: "accepted" | "active";
@@ -174,6 +185,8 @@ export default function App() {
     uncertain: boolean;
   } | null>(null);
   const deviceIdRef = useRef("");
+  const checkOpenRef = useRef(false);
+  const requiresRotationPlayRef = useRef(false);
   const requireDeviceSelectionRef = useRef(
     sessionStorage.getItem("rotation-reselect-device") === "yes",
   );
@@ -445,6 +458,8 @@ export default function App() {
     if (id) sessionStorage.removeItem("rotation-reselect-device");
     else sessionStorage.setItem("rotation-reselect-device", "yes");
     setDeviceId(id);
+    setCheckResult(null);
+    setCheckError("");
     setActivation(null);
     deviceIdRef.current = id;
     if (id) sessionStorage.setItem("rotation-connect-device", id);
@@ -461,6 +476,94 @@ export default function App() {
         ? "Device selected. Press Play to start the selected song, or activate the device first."
         : "Choose a Spotify device to listen.",
     );
+  }
+  function togglePlaybackCheck() {
+    if (command.current) return;
+    const next = !checkOpenRef.current;
+    checkOpenRef.current = next;
+    playbackEpochRef.current += 1;
+    setCheckOpen(next);
+    if (!next && requiresRotationPlayRef.current)
+      setPlayerMessage("Playback check may have changed Spotify’s queue. Press Play to restore your Rotation order.");
+  }
+  async function sendPlaybackCheck(action: PlaybackCheckAction) {
+    if (!deviceIdRef.current || command.current) return;
+    const selectedId = deviceIdRef.current;
+    setCheckResult(null);
+    setCheckError("");
+    setCheckPending("command");
+    // The server clears its queued window before sending the raw command.
+    // A timeout can therefore leave the command outcome uncertain too.
+    queuedThroughRef.current = -1;
+    requiresRotationPlayRef.current = true;
+    setRequiresRotationPlay(true);
+    pendingUriRef.current = "";
+    unconfirmedUriRef.current = "";
+    setPendingUri("");
+    setIntent(false);
+    setPlayback(null);
+    setPosition(0);
+    try {
+      await run(async () => {
+        try {
+          const response = await api<{
+            accepted: true;
+            requestKind: string;
+          }>("/api/playback/check", {
+            method: "POST",
+            signal: playbackTimeout(),
+            body: JSON.stringify({ deviceId: selectedId, action }),
+          });
+          if (deviceIdRef.current !== selectedId) return;
+          setCheckResult({
+            text: `Spotify accepted the direct ${response.requestKind} command. This does not confirm what is audible. Listen on the selected device, then choose Read state to check Spotify’s report.`,
+            checkedAt: Date.now(),
+          });
+          setPlayerMessage(
+            "Playback check changed Spotify’s queue. Press Play after closing the check to restore Rotation.",
+          );
+        } catch (error) {
+          setCheckError(
+            `${describeError(error)} The command outcome may be uncertain. Use Read state before trying again.`,
+          );
+          throw error;
+        }
+      }, false, false);
+    } finally {
+      setCheckPending(null);
+    }
+  }
+  async function readPlaybackCheck() {
+    if (!deviceIdRef.current || command.current) return;
+    const selectedId = deviceIdRef.current;
+    setCheckError("");
+    setCheckResult(null);
+    setCheckPending("read");
+    try {
+      await run(async () => {
+        try {
+          const state = await api<PlaybackCheckState>(
+            `/api/playback/check?deviceId=${encodeURIComponent(selectedId)}`,
+            { signal: playbackTimeout() },
+          );
+          if (deviceIdRef.current !== selectedId) return;
+          const summary: Record<PlaybackCheckState["state"], string> = {
+            expected_playing: "Spotify reports the selected Rotation song playing.",
+            expected_paused: "Spotify reports the selected Rotation song paused.",
+            other_track: "Spotify reports a different song from Rotation’s selection.",
+            selected_idle: "Spotify reports the selected device idle.",
+            other_device: "Spotify reports playback on another device.",
+            no_playback: "Spotify reports no active playback.",
+          };
+          setCheckResult({ text: summary[state.state], state, checkedAt: Date.now() });
+        } catch (error) {
+          setCheckError(describeError(error));
+          throw error;
+        }
+      }, false, false);
+    } finally {
+      setCheckPending(null);
+    }
   }
   async function activateDevice() {
     const selected = selectedDevice;
@@ -496,25 +599,30 @@ export default function App() {
       if (!result.active) void loadDevices();
     });
   }
-  async function run(task: () => Promise<void>) {
+  async function run(
+    task: () => Promise<void>,
+    announceWorking = true,
+    refreshLogs = true,
+  ) {
     if (command.current) return;
     playbackEpochRef.current += 1;
     command.current = true;
     setBusy(true);
-    if (page === "player")
+    if (page === "player" && announceWorking)
       setPlayerMessage("Working with Spotify. Playback controls will return when it responds…");
     const waiting = window.setTimeout(() => {
-      if (page === "player")
+      if (page === "player" && announceWorking)
         setPlayerMessage("Waiting for Spotify to finish this action…");
     }, 8_000);
     try {
       await task();
-      if (page === "player") void loadPlaybackLogs().catch(() => {});
+      if (page === "player" && refreshLogs)
+        void loadPlaybackLogs().catch(() => {});
     } catch (error) {
       const apiError = error as ApiError;
       if (apiError.retryAfter)
         setCooldownUntil(Date.now() + apiError.retryAfter * 1_000);
-      if (page === "player")
+      if (page === "player" && refreshLogs)
         void loadPlaybackLogs().catch(() => {});
       setNotice({ text: describeError(error), kind: "error" });
       if (page === "player") setPlayerMessage(describeError(error));
@@ -590,10 +698,16 @@ export default function App() {
       },
     );
     queuedThroughRef.current = result.queuedThroughIndex;
+    requiresRotationPlayRef.current = false;
+    setRequiresRotationPlay(false);
     markPending(item, startPosition);
   }
   async function togglePlayback() {
-    if (!canPlay) return;
+    if (!canPlay || checkOpenRef.current) return;
+    if (requiresRotationPlayRef.current) {
+      await start();
+      return;
+    }
     if (playbackCoolingDown) {
       setPlayerMessage(`Spotify is cooling down. Try again in ${cooldownRemaining} seconds.`);
       return;
@@ -694,6 +808,7 @@ export default function App() {
     void pollRef.current();
   }
   async function navigate(direction: "next" | "previous", automatic = false) {
+    if (checkOpenRef.current || requiresRotationPlayRef.current) return;
     if (playbackCoolingDown) {
       if (!automatic)
         setPlayerMessage(`Spotify is cooling down. Try again in ${cooldownRemaining} seconds.`);
@@ -894,6 +1009,8 @@ export default function App() {
   }
   async function refreshPlaybackOnce() {
     if (
+      checkOpenRef.current ||
+      requiresRotationPlayRef.current ||
       !deviceIdRef.current ||
       command.current ||
       Date.now() < nextPollAllowedRef.current
@@ -912,6 +1029,8 @@ export default function App() {
       // A command or device change can begin while this GET waits. Ignore its
       // stale result before it can restore the old playback state.
       if (
+        checkOpenRef.current ||
+        requiresRotationPlayRef.current ||
         !playbackObservationStillRelevant(
           requestedDeviceId,
           deviceIdRef.current,
@@ -924,6 +1043,8 @@ export default function App() {
       lastObservedAtRef.current = Date.now();
     } catch (error) {
       if (
+        checkOpenRef.current ||
+        requiresRotationPlayRef.current ||
         !playbackObservationStillRelevant(
           requestedDeviceId,
           deviceIdRef.current,
@@ -1233,7 +1354,7 @@ export default function App() {
     }
   }
   async function refreshPlayback() {
-    if (pollingRef.current) return;
+    if (pollingRef.current || checkOpenRef.current || requiresRotationPlayRef.current) return;
     pollingRef.current = true;
     try {
       await refreshPlaybackOnce();
@@ -1306,6 +1427,8 @@ export default function App() {
     const poll = (waking = false) => {
       expirePendingIfOverdue();
       if (
+        checkOpenRef.current ||
+        requiresRotationPlayRef.current ||
         document.visibilityState !== "visible" ||
         command.current ||
         pollingRef.current ||
@@ -1348,7 +1471,7 @@ export default function App() {
       window.removeEventListener("focus", onWake);
       window.removeEventListener("pageshow", onWake);
     };
-  }, [session?.authenticated, deviceId, page, playingIntent, pendingUri, playbackCoolingDown, loadDevices]);
+  }, [session?.authenticated, deviceId, page, playingIntent, pendingUri, playbackCoolingDown, checkOpen, requiresRotationPlay, loadDevices]);
   return (
     <div className="app">
       <header className="header wrap">
@@ -1659,6 +1782,90 @@ export default function App() {
                       device. Reopen Spotify on it, then refresh devices.
                     </p>
                   )}
+                  <div className="playback-check">
+                    <button
+                      className="secondary-button playback-check-toggle"
+                      type="button"
+                      aria-expanded={checkOpen}
+                      aria-controls="playback-check-controls"
+                      onClick={togglePlaybackCheck}
+                      disabled={busy}
+                    >
+                      {checkOpen ? "Close playback check" : "Playback check"}
+                    </button>
+                    {checkOpen && (
+                      <div id="playback-check-controls" className="playback-check-body">
+                        <p>
+                          Direct Spotify controls for comparing this output. These
+                          commands use Spotify’s queue and do not edit Rotation’s
+                          playlist or shuffled order. They can replace the current
+                          queue; close this panel and press Play to restore it.
+                          Rotation does not check playback automatically while
+                          this panel is open.
+                        </p>
+                        <p>
+                          Play playlist context starts at the selected song in
+                          the source playlist. Play Rotation tracks sends the
+                          next songs in Rotation order. Next and Previous below
+                          use Spotify’s queue and leave Rotation’s selected song
+                          unchanged.
+                        </p>
+                        <div className="playback-check-actions">
+                          {([
+                            ["play-context", "Play playlist context"],
+                            ["play-tracks", "Play Rotation tracks"],
+                            ["resume", "Resume in Spotify"],
+                            ["pause", "Pause in Spotify"],
+                            ["next", "Next in Spotify"],
+                            ["previous", "Previous in Spotify"],
+                          ] as const).map(([action, label]) => (
+                            <button
+                              key={action}
+                              className="secondary-button"
+                              type="button"
+                              onClick={() => void sendPlaybackCheck(action)}
+                              disabled={busy || !canPlay || !current || playbackCoolingDown}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                          <button
+                            className="secondary-button"
+                            type="button"
+                            onClick={() => void readPlaybackCheck()}
+                            disabled={busy || !canPlay || !current}
+                          >
+                            Read state
+                          </button>
+                        </div>
+                        {checkPending && (
+                          <p role="status">
+                            {checkPending === "command"
+                              ? "Sending one direct Spotify command…"
+                              : "Reading Spotify playback state…"}
+                          </p>
+                        )}
+                        {!canPlay && <p>Choose an available playback device above to run this check.</p>}
+                        {canPlay && !current && <p>Load a Rotation track before running this check.</p>}
+                        {checkError && <p className="inline-error" role="alert">{checkError}</p>}
+                        {checkResult && (
+                          <div className="playback-check-result" role="status" aria-live="polite">
+                            <p>{checkResult.text}</p>
+                            {checkResult.state && (
+                              <p>
+                                Selected device active: {checkResult.state.selectedDeviceActive ? "yes" : "no"} ·
+                                Shuffle: {checkResult.state.shuffleOn === null ? "unknown" : checkResult.state.shuffleOn ? "on" : "off"} ·
+                                Repeat: {checkResult.state.repeatOn === null ? "unknown" : checkResult.state.repeatOn ? "on" : "off"} ·
+                                Item playable: {checkResult.state.itemPlayable === null ? "unknown" : checkResult.state.itemPlayable ? "yes" : "no"} ·
+                                Item restricted: {checkResult.state.itemRestricted === null ? "unknown" : checkResult.state.itemRestricted ? "yes" : "no"}
+                              </p>
+                            )}
+                            <small>{checkResult.state ? "Read" : "Sent"} {new Date(checkResult.checkedAt).toLocaleTimeString()}</small>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
                   <div className="playback-diagnostics">
                     <div>
                       <strong>
@@ -1788,7 +1995,7 @@ export default function App() {
                           <button
                             aria-label="Previous track"
                             onClick={() => void navigate("previous")}
-                            disabled={!canPlay || playbackCoolingDown || !navigationAvailable(pendingUri, busy)}
+                            disabled={!canPlay || checkOpen || requiresRotationPlay || playbackCoolingDown || !navigationAvailable(pendingUri, busy)}
                           >
                             ↶
                           </button>
@@ -1796,14 +2003,14 @@ export default function App() {
                             className="play-button"
                             aria-label={playingIntent ? "Pause" : "Play"}
                             onClick={() => void togglePlayback()}
-                            disabled={busy || !canPlay || playbackCoolingDown || !!pendingUri}
+                            disabled={busy || checkOpen || !canPlay || playbackCoolingDown || !!pendingUri}
                           >
                             {playingIntent ? "Ⅱ" : "▶"}
                           </button>
                           <button
                             aria-label="Next track"
                             onClick={() => void navigate("next")}
-                            disabled={!canPlay || playbackCoolingDown || !navigationAvailable(pendingUri, busy)}
+                            disabled={!canPlay || checkOpen || requiresRotationPlay || playbackCoolingDown || !navigationAvailable(pendingUri, busy)}
                           >
                             ↷
                           </button>
@@ -1831,6 +2038,8 @@ export default function App() {
                             }}
                             disabled={
                               !canPlay ||
+                              checkOpen ||
+                              requiresRotationPlay ||
                               !duration ||
                               playback?.uri !== current.uri ||
                               !!pendingUri ||
@@ -1856,12 +2065,16 @@ export default function App() {
                         >
                           {playbackCoolingDown
                             ? `Spotify is cooling down. Controls return in about ${cooldownRemaining} seconds.`
+                            : checkOpen
+                              ? "Playback check is open. Close it to return to Rotation controls."
+                              : requiresRotationPlay
+                                ? "Playback check may have changed Spotify’s queue. Press Play to restore Rotation before skipping or seeking."
                             : playerMessage ||
                             (canPlay
                               ? `Ready on ${selectedDevice?.name}. Press Play to start the selected song.`
                               : "Choose a Spotify device to listen.")}
                         </div>
-                        {canPlay && !playingIntent && !pendingUri && (
+                        {canPlay && !checkOpen && !playingIntent && !pendingUri && (
                           <button
                             className="secondary-button start-button"
                             onClick={() => void start()}
@@ -1874,7 +2087,7 @@ export default function App() {
                           <button
                             className="remove-button"
                             onClick={askRemove}
-                            disabled={busy || !!failure || duplicate}
+                            disabled={busy || checkOpen || requiresRotationPlay || !!failure || duplicate}
                             aria-label={`Remove and skip ${current.name}${hasArchive ? ", sending it to history" : ", without archiving"}`}
                           >
                             <span aria-hidden="true">×</span> Remove and skip
@@ -1918,7 +2131,7 @@ export default function App() {
                               <button
                                 className="primary-button"
                                 onClick={() => void retry()}
-                                disabled={busy}
+                                disabled={busy || checkOpen || requiresRotationPlay}
                               >
                                 Retry removal
                               </button>
@@ -1930,7 +2143,7 @@ export default function App() {
                                 setFailure(null);
                                 void remove(true);
                               }}
-                              disabled={busy}
+                              disabled={busy || checkOpen || requiresRotationPlay}
                             >
                               Remove without archiving
                             </button>
@@ -1942,6 +2155,7 @@ export default function App() {
                                 setFailure(null);
                                 void loadRotation();
                               }}
+                              disabled={busy || checkOpen}
                             >
                               Refresh playlist
                             </button>

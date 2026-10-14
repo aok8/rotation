@@ -5,9 +5,11 @@ import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readConfig, userPaths } from '../desktop/runtime.mjs';
+import { startTracks, startContext, resume, pause, next, previous, transfer, shuffleOff, repeatOff } from '../server/dist/player-requests.js';
 
 const trackUri = /^spotify:track:[A-Za-z0-9]+$/;
-const commands = ['devices', 'state', 'resume', 'play-one', 'play-window', 'play-context', 'transfer-paused', 'transfer-play', 'shuffle-off', 'repeat-off', 'next'];
+const commands = ['devices', 'state', 'resume', 'pause', 'next', 'previous', 'play-one', 'play-window', 'play-context', 'transfer-paused', 'transfer-play', 'shuffle-off', 'repeat-off'];
+const callOnly = ({kind, ...call}) => call;
 
 export function decryptProfile(ciphertext, secret) {
   const buffer = Buffer.from(ciphertext, 'base64');
@@ -23,27 +25,28 @@ export function prepareCall(command, device, rotation) {
   if (command === 'devices') return { method: 'GET', path: '/me/player/devices' };
   if (command === 'state') return { method: 'GET', path: '/me/player' };
   if (!device) throw new Error('Specify --device-id from the devices result.');
-  const query = `device_id=${encodeURIComponent(device)}`;
-  if (command === 'resume') return { method: 'PUT', path: `/me/player/play?${query}` };
+  if (command === 'resume') return callOnly(resume(device));
+  if (command === 'pause') return callOnly(pause(device));
+  if (command === 'next') return callOnly(next(device));
+  if (command === 'previous') return callOnly(previous(device));
   if (command === 'play-context') {
     const sourceId = rotation?.source?.id;
     const currentKey = rotation?.order?.[rotation.currentIndex];
     const uri = rotation?.items?.find(item => item.key === currentKey)?.uri;
     if (typeof sourceId !== 'string' || !/^[A-Za-z0-9]{10,64}$/.test(sourceId) || typeof uri !== 'string' || !trackUri.test(uri))
       throw new Error('Start a Rotation session and quit the app before this test.');
-    return { method: 'PUT', path: `/me/player/play?${query}`, body: { context_uri: `spotify:playlist:${sourceId}`, offset: { uri } } };
+    return callOnly(startContext(device, `spotify:playlist:${sourceId}`, uri));
   }
   if (command.startsWith('play-')) {
     const byKey = new Map((rotation?.items || []).map(item => [item.key, item]));
     const uris = rotation?.order?.slice(rotation.currentIndex, rotation.currentIndex + (command === 'play-one' ? 1 : 20)).map(key => byKey.get(key)?.uri);
     if (!uris?.length || uris.some(uri => typeof uri !== 'string' || !trackUri.test(uri)))
       throw new Error('Start a Rotation session and quit the app before this test.');
-    return { method: 'PUT', path: `/me/player/play?${query}`, body: { uris, offset: { position: 0 } } };
+    return callOnly(startTracks(device, uris));
   }
-  if (command.startsWith('transfer-')) return { method: 'PUT', path: '/me/player', body: { device_ids: [device], play: command === 'transfer-play' } };
-  if (command === 'next') return { method: 'POST', path: `/me/player/next?${query}` };
-  if (command === 'shuffle-off') return { method: 'PUT', path: `/me/player/shuffle?state=false&${query}` };
-  return { method: 'PUT', path: `/me/player/repeat?state=off&${query}` };
+  if (command.startsWith('transfer-')) return callOnly(transfer(device, command === 'transfer-play'));
+  if (command === 'shuffle-off') return callOnly(shuffleOff(device));
+  return callOnly(repeatOff(device));
 }
 
 export function safeResponse(body, command, device) {
@@ -117,7 +120,8 @@ An expired connection requires reopening Rotation, refreshing devices, then Quit
   const started = Date.now();
   try {
     const response = await fetch(`https://api.spotify.com/v1${call.path}`, {
-      method: call.method, headers: { Authorization: `Bearer ${session.tokens.access}`, 'Content-Type': 'application/json' },
+      method: call.method, headers: { Authorization: `Bearer ${session.tokens.access}`,
+        ...(call.body ? {'Content-Type': 'application/json'} : call.method !== 'GET' ? {'Content-Length': '0'} : {}) },
       ...(call.body ? { body: JSON.stringify(call.body) } : {}), signal: AbortSignal.timeout(10000),
     });
     const body = response.status === 204 ? null : await response.json().catch(() => null);

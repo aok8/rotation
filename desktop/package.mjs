@@ -50,6 +50,7 @@ await mkdir(join(appRoot, 'web'), { recursive: true });
 await cp(join(projectRoot, 'desktop/launcher.mjs'), join(appRoot, 'desktop/launcher.mjs'));
 await cp(join(projectRoot, 'desktop/runtime.mjs'), join(appRoot, 'desktop/runtime.mjs'));
 await cp(join(projectRoot, 'scripts/spotify-player-isolate.mjs'), join(appRoot, 'scripts/spotify-player-isolate.mjs'));
+await cp(join(projectRoot, 'THIRD_PARTY_NOTICES.md'), join(appRoot, 'THIRD_PARTY_NOTICES.md'));
 await cp(join(projectRoot, 'server/dist'), join(appRoot, 'server/dist'), { recursive: true });
 await cp(join(projectRoot, 'server/package.json'), join(appRoot, 'server/package.json'));
 await cp(join(projectRoot, 'server/node_modules'), join(appRoot, 'server/node_modules'), {
@@ -138,7 +139,7 @@ async function inspect(directory) {
 await inspect(output);
 const manifest = {
   app: 'rotation', platform, arch, nodeVersion, buildId: randomBytes(16).toString('hex'),
-  files: ['desktop/launcher.mjs', 'desktop/runtime.mjs', 'scripts/spotify-player-isolate.mjs', 'server/dist', 'server/node_modules', 'server/package.json', 'web/dist', `runtime/${runtimeName}`],
+  files: ['desktop/launcher.mjs', 'desktop/runtime.mjs', 'scripts/spotify-player-isolate.mjs', 'THIRD_PARTY_NOTICES.md', 'server/dist', 'server/node_modules', 'server/package.json', 'web/dist', `runtime/${runtimeName}`],
 };
 await writeFile(join(appRoot, 'build-manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
 if (platform === 'darwin') {

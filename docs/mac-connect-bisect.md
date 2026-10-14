@@ -1,5 +1,15 @@
 # One-call Mac Spotify Connect check
 
+## In-app check with the rebuilt Player client
+
+The **Playback check** panel beside the device picker sends the same direct request builders used by the isolated helper and Rotation's command client. Select the official Mac output, open the panel, and choose **Play playlist context** once. This sends the source playlist context and the selected song offset, matching Spotifast's playlist-row start. It does not turn modes off or chain a transfer, state poll, or retry. Listen for at least 15 seconds, then choose **Read state** once and record its timestamped summary. A successful send reports acceptance only. If the device remains idle, stop that attempt rather than stacking commands.
+
+For a separate fresh-baseline comparison, **Play Rotation tracks** sends the shuffled URI window. **Resume in Spotify**, **Pause in Spotify**, **Next in Spotify**, and **Previous in Spotify** are direct commands against Spotify's existing queue, not Rotation navigation. Ordinary polling, transport and removal controls are suspended while the panel is open. Direct commands clear the saved queue hint before sending, even on timeout, but do not change Rotation's selected index, order or playlists. Close the panel and use ordinary Play to restore the Rotation queue.
+
+The owner's successful Spotifast test used its default sign-in. Testing Spotifast with the same personal Developer app and its additional callback `http://127.0.0.1:8989/login` checks app identity; it still leaves grant scopes and OAuth implementation different. Do not copy its public/default client identity into Rotation. The [QA notes](qa.md) explain those variables.
+
+## Command-line alternative
+
 This is an opt-in live test for a Mac where the Spotify desktop app appears as a Connect device but a Rotation Play or Next command stalls or stops audio. The owner has reported that behavior; a later Rotation diagnostic showed the selected Mac active with Shuffle and Repeat off, yet no current track item across repeated successful player-state reads. Spotifast started a newly selected track on the same Mac using Spotifast's **default sign-in**, even after Rotation failed. That does not isolate Rotation's different Developer app/grant or its request body. The helper included in a new desktop package sends **one Spotify Player API request per invocation**. It does not edit playlists, transfer automatically, retry, or poll for confirmation. An HTTP success means Spotify accepted the request; listen and inspect Spotify to determine whether playback changed.
 
 ## Prepare one run
@@ -40,7 +50,7 @@ If the one-song command works, quit and reopen Spotify's desktop app to restore 
 | `play-window` | Does sending up to 20 saved Rotation URIs behave differently from one URI? |
 | `resume` | Does a bodyless resume of the selected device work when its current song is paused? It does not select Rotation's current URI. |
 | `play-context` | Does playing the saved current song within its source playlist context behave differently from a URI list? It follows the playlist's order, not Rotation's shuffle; use only for diagnosis. |
-| `transfer-paused` | Does `play:false` transfer pause or wedge the desktop app? |
+| `transfer-paused` | Does a transfer with `play:false`, preserving Spotify's playing/paused state, activate the desktop app? |
 | `transfer-play` | Does `play:true` transfer activate the intended desktop app? |
 | `shuffle-off` or `repeat-off` | Does one mode change affect the desktop app? Each is a separate call. |
 | `next` | Does Spotify's native single-call skip work on the selected device? |

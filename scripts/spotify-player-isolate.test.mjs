@@ -5,6 +5,8 @@ import { decryptProfile, prepareCall, safeResponse } from './spotify-player-isol
 const rotation = {source:{id:'SOURCE12345'},currentIndex: 1, items:Array.from({length:25},(_,i)=>({key:String(i),uri:`spotify:track:ITEM${i}`})),order:Array.from({length:25},(_,i)=>String(i))};
 test('isolation creates exactly one requested call and uses current saved order',()=>{
   assert.deepEqual(prepareCall('next','device',rotation),{method:'POST',path:'/me/player/next?device_id=device'});
+  assert.deepEqual(prepareCall('previous','device',rotation),{method:'POST',path:'/me/player/previous?device_id=device'});
+  assert.deepEqual(prepareCall('pause','device',rotation),{method:'PUT',path:'/me/player/pause?device_id=device'});
   assert.deepEqual(prepareCall('play-one','device',rotation).body.uris,['spotify:track:ITEM1']);
   assert.deepEqual(prepareCall('play-one','device',rotation).body.offset,{position:0});
   assert.equal('position_ms' in prepareCall('play-one','device',rotation).body,false);

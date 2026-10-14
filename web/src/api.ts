@@ -55,6 +55,27 @@ export type ConnectPlayback = {
   durationMs: number;
   isPlaying: boolean;
 };
+export type PlaybackCheckAction =
+  | "play-context"
+  | "play-tracks"
+  | "resume"
+  | "pause"
+  | "next"
+  | "previous";
+export type PlaybackCheckState = {
+  state:
+    | "expected_playing"
+    | "expected_paused"
+    | "other_track"
+    | "selected_idle"
+    | "other_device"
+    | "no_playback";
+  selectedDeviceActive: boolean;
+  shuffleOn: boolean | null;
+  repeatOn: boolean | null;
+  itemPlayable: boolean | null;
+  itemRestricted: boolean | null;
+};
 export type PlaybackLogEntry = {
   id: string;
   at: number;

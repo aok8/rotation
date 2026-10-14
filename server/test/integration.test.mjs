@@ -28,6 +28,7 @@ let deletes = 0;
 let snapshot = "snap-1";
 let otherTracks = null;
 const playbackCommands = [];
+const playerRequests = [];
 let currentPlayback = null;
 let playbackStateReads = 0;
 let rateLimitState = false;
@@ -36,6 +37,7 @@ let deviceRestricted = false;
 let deviceAvailable = true;
 let deviceEntries = null;
 let failPlay = false;
+let failPlayNetwork = false;
 let noActivePlay = false;
 let nextUri = null;
 let queuedUri = null;
@@ -78,6 +80,8 @@ globalThis.fetch = async (input, init = {}) => {
   if (!url.startsWith("https://api.spotify.com/v1"))
     return nativeFetch(input, init);
   const u = new URL(url);
+  if (u.pathname.startsWith("/v1/me/player"))
+    playerRequests.push({ path: u.pathname, method: init.method || "GET", headers: init.headers });
   if (u.pathname === "/v1/me")
     return response({ id: userId, display_name: "Listener" });
   if (u.pathname === "/v1/me/player/devices")
@@ -141,6 +145,10 @@ globalThis.fetch = async (input, init = {}) => {
         })
       : new Response(null, { status: 204 });
   }
+  if (u.pathname === "/v1/me/player/previous" && init.method === "POST") {
+    playbackCommands.push({ path: u.pathname, deviceId: u.searchParams.get("device_id") });
+    return new Response(null, { status: 204 });
+  }
   if (
     (u.pathname === "/v1/me/player/pause" ||
       u.pathname === "/v1/me/player/play" ||
@@ -164,6 +172,10 @@ globalThis.fetch = async (input, init = {}) => {
       body: init.body ? JSON.parse(init.body) : null,
       positionMs: u.searchParams.get("position_ms"),
     });
+    if (u.pathname === "/v1/me/player/play" && failPlayNetwork) {
+      failPlayNetwork = false;
+      throw new Error("connection reset after write");
+    }
     if (u.pathname === "/v1/me/player/play" && heldPlay) {
       const held = heldPlay;
       heldPlay = null;
@@ -881,6 +893,67 @@ try {
         /spotify:track:|desktop123|another-device|Song|Artist/,
       );
     }
+  });
+  await test("raw Player check sends one chosen command and preserves Rotation selection", async () => {
+    const cookie = `rotation_session=${store.session.id}.${(await import("../dist/store.js")).sign(store.session.id)}`;
+    const csrf = store.session.csrf;
+    const ops = await import("../dist/player-ops.js");
+    otherTracks = [track, { ...track, uri: "spotify:track:check456" }];
+    const r = (await request("/api/rotation/start", "POST", {}, csrf, cookie)).body;
+    const first = r.items.find((item) => item.key === r.order[0]);
+    const second = r.items.find((item) => item.key === r.order[1]);
+    currentPlayback = { device: { id: "device12345", is_active: true, is_restricted: false },
+      currently_playing_type: "track", item: { ...track, uri: first.uri },
+      is_playing: true, shuffle_state: false, repeat_state: "off" };
+    assert.equal((await request("/api/playback", "PUT", { deviceId: "device12345", uri: first.uri }, csrf, cookie)).status, 200);
+    assert.ok(store.session.rotation.queuedWindow);
+    const noCsrf = await request("/api/playback/check", "POST", { deviceId: "device12345", action: "pause" }, undefined, cookie);
+    assert.equal(noCsrf.status, 403);
+    const expected = new Map([
+      ["play-context", { kind: "context", path: "/v1/me/player/play" }],
+      ["play-tracks", { kind: "tracks", path: "/v1/me/player/play" }],
+      ["resume", { kind: "resume", path: "/v1/me/player/play" }],
+      ["pause", { kind: "pause", path: "/v1/me/player/pause" }],
+      ["next", { kind: "next", path: "/v1/me/player/next" }],
+      ["previous", { kind: "previous", path: "/v1/me/player/previous" }],
+    ]);
+    for (const [action, { kind, path }] of expected) {
+      const calls = playerRequests.length;
+      const result = await request("/api/playback/check", "POST", { deviceId: "device12345", action }, csrf, cookie);
+      assert.equal(result.status, 200, action);
+      assert.deepEqual(result.body, { accepted: true, requestKind: kind });
+      assert.deepEqual(playerRequests.slice(calls).map((entry) => entry.path), [path], action);
+      assert.equal(store.session.rotation.currentIndex, 0);
+      assert.deepEqual(store.session.rotation.order, r.order);
+      assert.equal(store.session.rotation.queuedWindow, undefined);
+      const command = playbackCommands.at(-1);
+      if (action === "play-context")
+        assert.deepEqual(command.body, { context_uri: "spotify:playlist:source12345", offset: { uri: first.uri } });
+      if (action === "play-tracks")
+        assert.deepEqual(command.body, { uris: [first.uri, second.uri], offset: { position: 0 } });
+      if (["resume", "pause", "next", "previous"].includes(action)) {
+        assert.equal(command.body ?? null, null);
+        assert.equal(playerRequests.at(-1).headers["Content-Length"], "0");
+        assert.equal(playerRequests.at(-1).headers["Content-Type"], undefined);
+      }
+    }
+    const reads = playerRequests.length;
+    const observed = await request("/api/playback/check?deviceId=device12345", "GET", undefined, undefined, cookie);
+    assert.equal(observed.status, 200);
+    assert.equal(observed.headers.get("cache-control"), "no-store");
+    assert.equal(observed.body.state, "expected_playing");
+    assert.equal(observed.body.selectedDeviceActive, true);
+    assert.deepEqual(playerRequests.slice(reads).map((entry) => entry.path), ["/v1/me/player"]);
+    assert.doesNotMatch(JSON.stringify(observed.body), /spotify:track:|device12345|Song|Artist/);
+
+    assert.equal((await request("/api/playback", "PUT", { deviceId: "device12345", uri: first.uri }, csrf, cookie)).status, 200);
+    assert.ok(store.session.rotation.queuedWindow);
+    failPlayNetwork = true;
+    const ambiguous = await request("/api/playback/check", "POST", { deviceId: "device12345", action: "play-tracks" }, csrf, cookie);
+    assert.equal(ambiguous.body.error.code, "spotify_network");
+    assert.equal(store.session.rotation.currentIndex, 0);
+    assert.equal(store.session.rotation.queuedWindow, undefined, "unknown outcome cannot retain a trusted queue");
+    ops.resetPlayerSession(store.session);
   });
   await test("overlapping playback mutations return 409 while Spotify play is pending", async () => {
     const cookie = `rotation_session=${store.session.id}.${(await import("../dist/store.js")).sign(store.session.id)}`;

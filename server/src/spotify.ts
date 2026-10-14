@@ -66,7 +66,11 @@ async function sendSpotify(s: Session, path: string, init: RequestInit) {
       ...init,
       headers: {
         Authorization: `Bearer ${s.tokens.access}`,
-        "Content-Type": "application/json",
+        ...(init.body !== undefined && init.body !== null
+          ? { "Content-Type": "application/json" }
+          : method === "PUT" || method === "POST"
+            ? { "Content-Length": "0" }
+            : {}),
         ...(init.headers || {}),
       },
       signal: signal(),

@@ -5,6 +5,7 @@ import { SpotifyApiError } from "./spotify.js";
 import { spotify } from "./spotify.js";
 import { save } from "./store.js";
 import type { Rotation, Session } from "./types.js";
+import { next, repeatOff, sendPlayerCommand, shuffleOff, startTracks, transfer } from "./spotify-player.js";
 
 export const ACTIVE_DEVICE = "active";
 
@@ -13,15 +14,6 @@ export function requirePlaybackRead(s: Session) {
     throw new AppError(
       "reauthorization_required",
       "Reconnect Spotify to allow device and playback access.",
-      403,
-    );
-}
-
-function requirePlaybackModify(s: Session) {
-  if (!s.grantedScopes?.includes("user-modify-playback-state"))
-    throw new AppError(
-      "reauthorization_required",
-      "Reconnect Spotify to allow playback control.",
       403,
     );
 }
@@ -35,12 +27,6 @@ export function deviceId(value: unknown): string {
   )
     throw new AppError("invalid_playback", "Choose a connected player.");
   return value;
-}
-
-export function deviceParameter(selectedDevice: string, separator = "?") {
-  return selectedDevice === ACTIVE_DEVICE
-    ? ""
-    : `${separator}device_id=${encodeURIComponent(selectedDevice)}`;
 }
 
 export async function devices(s: Session) {
@@ -204,13 +190,6 @@ export async function requireCurrentPlayback(
   return state;
 }
 
-export async function playbackCommand(s: Session, path: string, body?: object, method = "PUT") {
-  requirePlaybackModify(s);
-  await spotify(s, path, {
-    method,
-    ...(body ? { body: JSON.stringify(body) } : {}),
-  });
-}
 function realDevice(selectedDevice: string) {
   if (selectedDevice === ACTIVE_DEVICE)
     throw new AppError("device_gone", "Refresh devices and choose a player with a device ID.", 409);
@@ -251,7 +230,7 @@ export async function transferDevice(s: Session, selectedDevice: string) {
     return { accepted: true, active: true };
   // Transfer is a separate user action. play:false preserves Spotify's current
   // playing/paused state; explicit Play supplies Rotation's URI afterward.
-  await playbackCommand(s, "/me/player", { device_ids: [selectedDevice], play: false });
+  await sendPlayerCommand(s, transfer(selectedDevice, false));
   const observed = await observeActiveDevice(s, selectedDevice);
   return { accepted: true, active: Boolean(observed) };
 }
@@ -261,9 +240,9 @@ async function normalizeQueueModes(s: Session, state: any, selectedDevice: strin
   const repeatOn = typeof state?.repeat_state === "string" && state.repeat_state !== "off";
   if (!shuffleOn && !repeatOn) return state;
   if (shuffleOn)
-    await playbackCommand(s, `/me/player/shuffle?state=false&device_id=${encodeURIComponent(selectedDevice)}`);
+    await sendPlayerCommand(s, shuffleOff(selectedDevice));
   if (repeatOn)
-    await playbackCommand(s, `/me/player/repeat?state=off&device_id=${encodeURIComponent(selectedDevice)}`);
+    await sendPlayerCommand(s, repeatOff(selectedDevice));
   for (let attempt = 0; attempt < 3; attempt++) {
     if (attempt) await delay(300, undefined, { signal: currentPlayerOperation()?.signal });
     const observed = await spotify(s, "/me/player");
@@ -302,7 +281,7 @@ export async function skipWithinWindow(
   const liveQueue = await spotify(s, "/me/player/queue");
   if (liveQueue?.queue?.[0]?.uri !== nextUri)
     throw new AppError("queue_mismatch", "Spotify's next song differs from Rotation. Press Play to restore the Rotation queue.", 409);
-  await playbackCommand(s, `/me/player/next?device_id=${encodeURIComponent(selectedDevice)}`, undefined, "POST");
+  await sendPlayerCommand(s, next(selectedDevice));
   for (let attempt = 0; attempt < 2; attempt++) {
     await delay(350, undefined, { signal: currentPlayerOperation()?.signal });
     const after = await spotify(s, "/me/player");
@@ -334,23 +313,19 @@ export async function playWindow(
     .map((key) => byKey.get(key)?.uri);
   if (!uris.length || uris.some((uri) => !uri))
     throw new AppError("item_changed", "Refresh the Rotation playlist.", 409);
-  // The URI window is already sliced to the selected Rotation item. Match
-  // Spotify's explicit list-start shape while keeping our shuffled order.
-  const body: { uris: string[]; offset: { position: number }; position_ms?: number } =
-    { uris: uris as string[], offset: { position: 0 } };
-  if (positionMs !== undefined && positionMs > 0) body.position_ms = positionMs;
+  const request = startTracks(selectedDevice, uris as string[], 0, positionMs || 0);
   try {
-    await playbackCommand(s, `/me/player/play?device_id=${encodeURIComponent(selectedDevice)}`, body);
+    await sendPlayerCommand(s, request);
   } catch (error) {
     if (!(error instanceof SpotifyApiError && error.upstreamStatus === 404 && error.reason === "NO_ACTIVE_DEVICE"))
       throw error;
     // A single transfer is allowed only for Spotify's explicit no-active-device
     // response. Observe the target once before retrying the exact Rotation URI.
-    await playbackCommand(s, "/me/player", { device_ids: [selectedDevice], play: true });
+    await sendPlayerCommand(s, transfer(selectedDevice, true));
     const transferred = await spotify(s, "/me/player");
     if (stateDevice(transferred) !== selectedDevice)
       throw new AppError("device_activation_failed", "Spotify did not activate the selected player. Open Spotify there and try again.", 409);
-    await playbackCommand(s, `/me/player/play?device_id=${encodeURIComponent(selectedDevice)}`, body);
+    await sendPlayerCommand(s, request);
   }
   const queuedThroughIndex = index + uris.length - 1;
   r.queuedWindow = { startIndex: index, endIndex: queuedThroughIndex, deviceId: selectedDevice };

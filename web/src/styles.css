@@ -283,6 +283,40 @@ p {
   grid-column: 1 / -1;
   margin: 2px 0 0;
 }
+.playback-check {
+  grid-column: 1 / -1;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+  margin-top: 8px;
+}
+.playback-check-toggle {
+  width: 100%;
+  text-align: left;
+}
+.playback-check-body {
+  padding-top: 10px;
+}
+.playback-check-body > p,
+.playback-check-result {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.playback-check-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+.playback-check-result {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  padding: 10px 12px;
+}
+.playback-check-result p {
+  margin: 0 0 4px;
+}
 .playback-diagnostics {
   grid-column: 1 / -1;
   display: flex;
