@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  canResumeObservedTrack,
   classifyRemotePlayback,
   chooseConnectDevice,
   findForwardMatch,
   navigationAvailable,
   pendingPlaybackStatus,
+  pendingPollDelay,
   playbackObservationStillRelevant,
   unconfirmedPlaybackMismatch,
 } from "../src/connect-state.ts";
@@ -30,6 +32,14 @@ const classify = (remote, previous = 170_000, nextUri = next) =>
     180_000,
     true,
   );
+
+test("accepted activation or Play cannot masquerade as a paused song to resume", () => {
+  assert.equal(canResumeObservedTrack(null, device, current, ""), false);
+  assert.equal(canResumeObservedTrack(state(current, false), device, current, current), false);
+  assert.equal(canResumeObservedTrack(state(current, false, 0, "phone"), device, current, ""), false);
+  assert.equal(canResumeObservedTrack(state(next, false), device, current, ""), false);
+  assert.equal(canResumeObservedTrack(state(current, false), device, current, ""), true);
+});
 
 test("current playback and an explicit pause retain current app item", () => {
   assert.equal(classify(state(current, true, 171_000)), "current-playing");
@@ -122,6 +132,10 @@ test("pending playback expires even without a poll or with a different device", 
   );
 });
 
+test("pending confirmation backs off to an eight-second ceiling", () => {
+  assert.deepEqual([0, 1, 2, 3, 4].map(pendingPollDelay), [2000, 4000, 8000, 8000, 8000]);
+});
+
 test("navigation waits for Spotify confirmation, then unlocks", () => {
   assert.equal(navigationAvailable(current, false), false);
   assert.equal(navigationAvailable("", true), false);
@@ -159,7 +173,7 @@ test("an unconfirmed command never adopts another queued song", () => {
   );
 });
 
-test("local Mac probe requires explicit Connect device selection", () => {
+test("explicit device selection suppresses automatic Connect selection", () => {
   const available = [
     { id: "mac", name: "This Mac", type: "computer", isActive: true, isRestricted: false },
   ];
@@ -168,9 +182,10 @@ test("local Mac probe requires explicit Connect device selection", () => {
   assert.equal(chooseConnectDevice(available, "mac", "mac", "mac", true), "");
 });
 
-test("an in-flight playback observation is ignored after a probe or device switch", () => {
+test("an in-flight playback observation is ignored after a command or device switch", () => {
   assert.equal(playbackObservationStillRelevant("mac", "mac", false), true);
   assert.equal(playbackObservationStillRelevant("mac", "mac", true), false);
   assert.equal(playbackObservationStillRelevant("mac", "web", false), false);
   assert.equal(playbackObservationStillRelevant("mac", "", false), false);
+  assert.equal(playbackObservationStillRelevant("mac", "mac", false, 4, 5), false);
 });

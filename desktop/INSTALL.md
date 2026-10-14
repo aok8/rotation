@@ -22,7 +22,9 @@ On first launch, rotation shows its local setup page. Enter your Spotify Client 
 
 If you used an older browser-player version, choose **Reconnect Spotify** after updating to grant device and playback-state access. Reconnecting the same Spotify account keeps your saved playlist choices.
 
-On the packaged macOS app, **Try local Mac playback** tests whether rotation can start the currently selected song in the Spotify desktop app. It plays one song only and replaces Spotify's active playback queue; your saved Rotation order stays intact. After the test, choose a Spotify device again and press **Play** to start the shuffled queue. If macOS blocks the test, allow Rotation to control Spotify in **System Settings → Privacy & Security → Automation**, then retry.
+Playback on macOS uses Spotify Connect, just as it does on Windows and Linux. Open Spotify's desktop app on the Mac, select that device in Rotation, and press **Play**. Rotation no longer requests macOS Automation permission or controls Spotify through AppleScript. A successful Spotify API response does not prove the desktop app played audio; use the device and playback status shown in Rotation to confirm it.
+
+If the Mac desktop device appears but Play or Next stalls, capture **Copy playback diagnostics** in Rotation before quitting. For a controlled test of one Spotify Player call at a time, follow [the Mac Connect bisect](../docs/mac-connect-bisect.md). It uses the saved local connection without putting a Spotify token in a command or report.
 
 ## Launch, quit, and update
 

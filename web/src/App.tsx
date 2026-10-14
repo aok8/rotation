@@ -7,20 +7,26 @@ import {
   type ApiError,
   type ConnectDevice,
   type ConnectPlayback,
+  type PlaybackCheckAction,
+  type PlaybackCheckState,
+  type PlaybackLogs,
   type Playlist,
   type Rotation,
   type Session,
   type TrackItem,
 } from "./api";
 import {
+  canResumeObservedTrack,
   classifyRemotePlayback,
   chooseConnectDevice,
   findForwardMatch,
   navigationAvailable,
   pendingPlaybackStatus,
+  pendingPollDelay,
   playbackObservationStillRelevant,
   unconfirmedPlaybackMismatch,
 } from "./connect-state";
+import { safePlaybackDiagnostics } from "./playback-diagnostics";
 
 type Notice = { text: string; kind: "ok" | "error" | "info" } | null;
 const formatTime = (ms = 0) => {
@@ -43,7 +49,7 @@ const initialTheme = (): "light" | "dark" => {
 };
 const resultRotation = (result: Rotation | { rotation: Rotation }) =>
   "rotation" in result ? result.rotation : result;
-const playbackTimeout = () => AbortSignal.timeout(30_000);
+const playbackTimeout = () => AbortSignal.timeout(15_000);
 function pendingRecoveryMessage(
   mismatch: ReturnType<typeof unconfirmedPlaybackMismatch>,
   deviceName: string,
@@ -143,11 +149,27 @@ export default function App() {
   const [devices, setDevices] = useState<ConnectDevice[]>([]);
   const [devicesLoading, setDevicesLoading] = useState(false);
   const [deviceError, setDeviceError] = useState("");
-  const [macProbeMessage, setMacProbeMessage] = useState("");
-  const [macProbeBusy, setMacProbeBusy] = useState(false);
+  const [playbackLogs, setPlaybackLogs] = useState<PlaybackLogs | null>(null);
+  const [playbackBuildId, setPlaybackBuildId] = useState<string | null>(null);
+  const [cooldownUntil, setCooldownUntil] = useState<number | null>(null);
+  const [cooldownNow, setCooldownNow] = useState(Date.now());
+  const [diagnosticsBusy, setDiagnosticsBusy] = useState(false);
   const [reauthorizationNeeded, setReauthorizationNeeded] = useState(false);
   const [activeDeviceId, setActiveDeviceId] = useState<string | null>(null);
   const [deviceId, setDeviceId] = useState("");
+  const [checkOpen, setCheckOpen] = useState(false);
+  const [checkResult, setCheckResult] = useState<{
+    text: string;
+    checkedAt: number;
+    state?: PlaybackCheckState;
+  } | null>(null);
+  const [checkError, setCheckError] = useState("");
+  const [checkPending, setCheckPending] = useState<"command" | "read" | null>(null);
+  const [requiresRotationPlay, setRequiresRotationPlay] = useState(false);
+  const [activation, setActivation] = useState<{
+    deviceId: string;
+    status: "accepted" | "active";
+  } | null>(null);
   const [playback, setPlayback] = useState<ConnectPlayback | null>(null);
   const [playingIntent, setPlayingIntent] = useState(false);
   const [pendingUri, setPendingUri] = useState("");
@@ -163,6 +185,8 @@ export default function App() {
     uncertain: boolean;
   } | null>(null);
   const deviceIdRef = useRef("");
+  const checkOpenRef = useRef(false);
+  const requiresRotationPlayRef = useRef(false);
   const requireDeviceSelectionRef = useRef(
     sessionStorage.getItem("rotation-reselect-device") === "yes",
   );
@@ -170,8 +194,9 @@ export default function App() {
   const pendingUriRef = useRef("");
   const unconfirmedUriRef = useRef("");
   const pendingSinceRef = useRef(0);
+  const pendingPollAttemptRef = useRef(0);
+  const pendingNextPollAtRef = useRef(0);
   const queuedThroughRef = useRef(-1);
-  const refreshingQueueRef = useRef(false);
   const pollingRef = useRef(false);
   const nextPollAllowedRef = useRef(0);
   const lastObservedAtRef = useRef(0);
@@ -179,6 +204,7 @@ export default function App() {
   const deviceRefreshInFlightRef = useRef(false);
   const pollRef = useRef<() => Promise<void>>(async () => {});
   const command = useRef(false);
+  const playbackEpochRef = useRef(0);
   const rotationRef = useRef<Rotation | null>(null);
   const positionRef = useRef(0);
   function setIntent(playing: boolean) {
@@ -220,6 +246,16 @@ export default function App() {
     } finally {
       setLoading(false);
     }
+  }, []);
+  const loadPlaybackLogs = useCallback(async () => {
+    const logs = await api<PlaybackLogs>("/api/playback/logs", {
+      signal: AbortSignal.timeout(10_000),
+    });
+    setPlaybackBuildId(logs.buildId);
+    setPlaybackLogs(logs);
+    setCooldownUntil(logs.cooldownUntil);
+    setCooldownNow(Date.now());
+    return logs;
   }, []);
   const loadPlaylists = useCallback(async () => {
     setPlaylistsLoading(true);
@@ -272,6 +308,15 @@ export default function App() {
     void loadSession();
   }, [loadSession]);
   useEffect(() => {
+    if (session?.authenticated)
+      void loadPlaybackLogs().catch(() => {});
+  }, [session?.authenticated, loadPlaybackLogs]);
+  useEffect(() => {
+    if (!cooldownUntil || cooldownUntil <= cooldownNow) return;
+    const interval = window.setInterval(() => setCooldownNow(Date.now()), 1_000);
+    return () => window.clearInterval(interval);
+  }, [cooldownUntil, cooldownNow]);
+  useEffect(() => {
     if (session?.authenticated) void loadPlaylists();
   }, [session?.authenticated, loadPlaylists]);
   useEffect(() => {
@@ -308,6 +353,15 @@ export default function App() {
       setActiveDeviceId(data.activeDeviceId);
       setDeviceId(chosen);
       deviceIdRef.current = chosen;
+      setActivation((previous) =>
+        previous?.deviceId === chosen
+          ? data.activeDeviceId === chosen
+            ? { deviceId: chosen, status: "active" }
+            : previous.status === "active"
+              ? null
+              : previous
+          : null,
+      );
       if (chosen !== previous) {
         setIntent(false);
         setPlayback(null);
@@ -318,7 +372,7 @@ export default function App() {
         queuedThroughRef.current = -1;
         setPlayerMessage(
           chosen
-            ? `Spotify device found: ${available.find((device) => device.id === chosen)?.name}. Press Play to listen.`
+            ? `Spotify device found: ${available.find((device) => device.id === chosen)?.name}. Press Play to start the selected song.`
             : previous
               ? "The selected Spotify device is no longer available. Choose another device or refresh devices."
               : "No available Spotify device yet. Open Spotify on a device, then refresh.",
@@ -353,7 +407,6 @@ export default function App() {
       .filter((item): item is TrackItem => !!item);
   }, [rotation]);
   const current = ordered[rotation?.currentIndex ?? -1];
-  useEffect(() => setMacProbeMessage(""), [current?.key]);
   const upcoming = ordered.slice(
     (rotation?.currentIndex ?? -1) + 1,
     (rotation?.currentIndex ?? -1) + 4,
@@ -367,11 +420,47 @@ export default function App() {
       1;
   const selectedDevice = devices.find((device) => device.id === deviceId);
   const canPlay = !!selectedDevice && !selectedDevice.isRestricted;
+  const cooldownRemaining = Math.max(
+    0,
+    Math.ceil(((cooldownUntil ?? 0) - cooldownNow) / 1_000),
+  );
+  const playbackCoolingDown = cooldownRemaining > 0;
+  async function copyPlaybackDiagnostics() {
+    if (diagnosticsBusy) return;
+    setDiagnosticsBusy(true);
+    try {
+      const freshText = loadPlaybackLogs().then((logs) =>
+        JSON.stringify(safePlaybackDiagnostics(logs), null, 2),
+      );
+      if (typeof ClipboardItem !== "undefined" && navigator.clipboard.write) {
+        // Start the clipboard write during the click's user activation while
+        // the local diagnostics request resolves.
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            "text/plain": freshText.then(
+              (value) => new Blob([value], { type: "text/plain" }),
+            ),
+          }),
+        ]);
+      } else {
+        await navigator.clipboard.writeText(await freshText);
+      }
+      setNotice({ text: "Playback diagnostics copied.", kind: "ok" });
+    } catch (error) {
+      setNotice({ text: describeError(error), kind: "error" });
+    } finally {
+      setDiagnosticsBusy(false);
+    }
+  }
   function selectDevice(id: string) {
+    playbackEpochRef.current += 1;
     requireDeviceSelectionRef.current = !id;
     if (id) sessionStorage.removeItem("rotation-reselect-device");
     else sessionStorage.setItem("rotation-reselect-device", "yes");
     setDeviceId(id);
+    setCheckResult(null);
+    setCheckError("");
+    setActivation(null);
     deviceIdRef.current = id;
     if (id) sessionStorage.setItem("rotation-connect-device", id);
     else sessionStorage.removeItem("rotation-connect-device");
@@ -384,23 +473,157 @@ export default function App() {
     queuedThroughRef.current = -1;
     setPlayerMessage(
       id
-        ? "Ready to play on the selected Spotify device."
+        ? "Device selected. Press Play to start the selected song, or activate the device first."
         : "Choose a Spotify device to listen.",
     );
   }
-  async function run(task: () => Promise<void>) {
+  function togglePlaybackCheck() {
     if (command.current) return;
+    const next = !checkOpenRef.current;
+    checkOpenRef.current = next;
+    playbackEpochRef.current += 1;
+    setCheckOpen(next);
+    if (!next && requiresRotationPlayRef.current)
+      setPlayerMessage("Playback check may have changed Spotify’s queue. Press Play to restore your Rotation order.");
+  }
+  async function sendPlaybackCheck(action: PlaybackCheckAction) {
+    if (!deviceIdRef.current || command.current) return;
+    const selectedId = deviceIdRef.current;
+    setCheckResult(null);
+    setCheckError("");
+    setCheckPending("command");
+    // The server clears its queued window before sending the raw command.
+    // A timeout can therefore leave the command outcome uncertain too.
+    queuedThroughRef.current = -1;
+    requiresRotationPlayRef.current = true;
+    setRequiresRotationPlay(true);
+    pendingUriRef.current = "";
+    unconfirmedUriRef.current = "";
+    setPendingUri("");
+    setIntent(false);
+    setPlayback(null);
+    setPosition(0);
+    try {
+      await run(async () => {
+        try {
+          const response = await api<{
+            accepted: true;
+            requestKind: string;
+          }>("/api/playback/check", {
+            method: "POST",
+            signal: playbackTimeout(),
+            body: JSON.stringify({ deviceId: selectedId, action }),
+          });
+          if (deviceIdRef.current !== selectedId) return;
+          setCheckResult({
+            text: `Spotify accepted the direct ${response.requestKind} command. This does not confirm what is audible. Listen on the selected device, then choose Read state to check Spotify’s report.`,
+            checkedAt: Date.now(),
+          });
+          setPlayerMessage(
+            "Playback check changed Spotify’s queue. Press Play after closing the check to restore Rotation.",
+          );
+        } catch (error) {
+          setCheckError(
+            `${describeError(error)} The command outcome may be uncertain. Use Read state before trying again.`,
+          );
+          throw error;
+        }
+      }, false, false);
+    } finally {
+      setCheckPending(null);
+    }
+  }
+  async function readPlaybackCheck() {
+    if (!deviceIdRef.current || command.current) return;
+    const selectedId = deviceIdRef.current;
+    setCheckError("");
+    setCheckResult(null);
+    setCheckPending("read");
+    try {
+      await run(async () => {
+        try {
+          const state = await api<PlaybackCheckState>(
+            `/api/playback/check?deviceId=${encodeURIComponent(selectedId)}`,
+            { signal: playbackTimeout() },
+          );
+          if (deviceIdRef.current !== selectedId) return;
+          const summary: Record<PlaybackCheckState["state"], string> = {
+            expected_playing: "Spotify reports the selected Rotation song playing.",
+            expected_paused: "Spotify reports the selected Rotation song paused.",
+            other_track: "Spotify reports a different song from Rotation’s selection.",
+            selected_idle: "Spotify reports the selected device idle.",
+            other_device: "Spotify reports playback on another device.",
+            no_playback: "Spotify reports no active playback.",
+          };
+          setCheckResult({ text: summary[state.state], state, checkedAt: Date.now() });
+        } catch (error) {
+          setCheckError(describeError(error));
+          throw error;
+        }
+      }, false, false);
+    } finally {
+      setCheckPending(null);
+    }
+  }
+  async function activateDevice() {
+    const selected = selectedDevice;
+    if (!selected?.id || selected.isRestricted) return;
+    await run(async () => {
+      setPlayerMessage(`Activating ${selected.name} in Spotify…`);
+      const result = await api<{ accepted: true; active: boolean }>(
+        "/api/playback/transfer",
+        {
+          method: "PUT",
+          signal: playbackTimeout(),
+          body: JSON.stringify({ deviceId: selected.id }),
+        },
+      );
+      if (deviceIdRef.current !== selected.id) return;
+      setActivation({
+        deviceId: selected.id,
+        status: result.active ? "active" : "accepted",
+      });
+      setIntent(false);
+      setPlayback(null);
+      setPosition(0);
+      setPendingUri("");
+      pendingUriRef.current = "";
+      unconfirmedUriRef.current = "";
+      queuedThroughRef.current = -1;
+      if (result.active) setActiveDeviceId(selected.id);
+      setPlayerMessage(
+        result.active
+          ? `${selected.name} is active. Press Play to start the selected song.`
+          : `Spotify accepted activation for ${selected.name}, but has not shown it as active yet. Refresh devices, then press Play to try.`,
+      );
+      if (!result.active) void loadDevices();
+    });
+  }
+  async function run(
+    task: () => Promise<void>,
+    announceWorking = true,
+    refreshLogs = true,
+  ) {
+    if (command.current) return;
+    playbackEpochRef.current += 1;
     command.current = true;
     setBusy(true);
-    if (page === "player")
+    if (page === "player" && announceWorking)
       setPlayerMessage("Working with Spotify. Playback controls will return when it responds…");
     const waiting = window.setTimeout(() => {
-      if (page === "player")
+      if (page === "player" && announceWorking)
         setPlayerMessage("Waiting for Spotify to finish this action…");
     }, 8_000);
     try {
       await task();
+      if (page === "player" && refreshLogs)
+        void loadPlaybackLogs().catch(() => {});
     } catch (error) {
+      const apiError = error as ApiError;
+      if (apiError.retryAfter)
+        setCooldownUntil(Date.now() + apiError.retryAfter * 1_000);
+      if (page === "player" && refreshLogs)
+        void loadPlaybackLogs().catch(() => {});
       setNotice({ text: describeError(error), kind: "error" });
       if (page === "player") setPlayerMessage(describeError(error));
     } finally {
@@ -439,6 +662,8 @@ export default function App() {
     pendingUriRef.current = item.uri;
     const startedAt = Date.now();
     pendingSinceRef.current = startedAt;
+    pendingPollAttemptRef.current = 0;
+    pendingNextPollAtRef.current = startedAt + 1_000;
     setPendingUri(item.uri);
     setIntent(false);
     setPlayback({
@@ -453,10 +678,11 @@ export default function App() {
     setPlayerMessage(
       `Starting on ${selectedDevice?.name || "Spotify device"}… Next and Previous unlock when Spotify confirms playback.`,
     );
-    window.setTimeout(() => void pollRef.current(), 1_500);
     window.setTimeout(() => expirePendingIfOverdue(startedAt), 20_100);
   }
   async function play(item: TrackItem, startPosition = 0) {
+    if (playbackCoolingDown)
+      throw new Error(`Spotify is cooling down. Try again in ${cooldownRemaining} seconds.`);
     if (!deviceIdRef.current)
       throw new Error("Choose a Spotify device, then try again.");
     const result = await api<{ ok: true; queuedThroughIndex: number }>(
@@ -472,10 +698,20 @@ export default function App() {
       },
     );
     queuedThroughRef.current = result.queuedThroughIndex;
+    requiresRotationPlayRef.current = false;
+    setRequiresRotationPlay(false);
     markPending(item, startPosition);
   }
   async function togglePlayback() {
-    if (!canPlay) return;
+    if (!canPlay || checkOpenRef.current) return;
+    if (requiresRotationPlayRef.current) {
+      await start();
+      return;
+    }
+    if (playbackCoolingDown) {
+      setPlayerMessage(`Spotify is cooling down. Try again in ${cooldownRemaining} seconds.`);
+      return;
+    }
     if (playingIntent) {
       await run(async () => {
         await api("/api/playback/control", {
@@ -495,9 +731,12 @@ export default function App() {
         );
       });
     } else if (
-      playback?.uri === current?.uri &&
-      playback.deviceId === deviceIdRef.current &&
-      !pendingUriRef.current
+      canResumeObservedTrack(
+        playback,
+        deviceIdRef.current,
+        current?.uri,
+        pendingUriRef.current,
+      )
     ) {
       await run(async () => {
         await api("/api/playback/control", {
@@ -514,6 +753,8 @@ export default function App() {
   }
   async function start() {
     await run(async () => {
+      if (playbackCoolingDown)
+        throw new Error(`Spotify is cooling down. Try again in ${cooldownRemaining} seconds.`);
       if (!canPlay)
         throw new Error("Choose an available Spotify device first.");
       const updated =
@@ -525,110 +766,6 @@ export default function App() {
       );
       if (item) await play(item);
     });
-  }
-  function clearConnectAfterMacProbe() {
-    // AppleScript can replace Spotify's active context. Require an explicit
-    // Connect choice before commands use the saved Rotation order again.
-    requireDeviceSelectionRef.current = true;
-    sessionStorage.setItem("rotation-reselect-device", "yes");
-    sessionStorage.removeItem("rotation-connect-device");
-    deviceIdRef.current = "";
-    setDeviceId("");
-    queuedThroughRef.current = -1;
-    pendingUriRef.current = "";
-    unconfirmedUriRef.current = "";
-    setPendingUri("");
-    setIntent(false);
-    setPlayback(null);
-    setPosition(0);
-    positionRef.current = 0;
-    setSeekValue(null);
-    setPlayerMessage(
-      "The local Mac test may have changed Spotify playback. Choose a device and press Play to start the shuffled Rotation queue.",
-    );
-  }
-  async function reloadRotationAfterMacProbe() {
-    const latest = await api<Rotation | null>("/api/rotation", {
-      signal: AbortSignal.timeout(10_000),
-    });
-    rotationRef.current = latest;
-    setRotation(latest);
-  }
-  async function probeMacPlayback() {
-    if (
-      !current ||
-      !session?.macLocalProbeAvailable ||
-      command.current ||
-      pendingUriRef.current
-    )
-      return;
-    command.current = true;
-    setBusy(true);
-    setMacProbeBusy(true);
-    setMacProbeMessage("");
-    try {
-      const result = await api<{
-        accepted: boolean;
-        state:
-          | "expected_playing"
-          | "expected_paused"
-          | "other_track"
-          | "idle"
-          | "unavailable";
-      }>("/api/playback/mac-probe", {
-        method: "POST",
-        signal: AbortSignal.timeout(45_000),
-        body: JSON.stringify({ itemKey: current.key }),
-      });
-      const messages = {
-        expected_playing:
-          "Spotify on this Mac is playing the selected song. This test does not start the shuffled queue.",
-        expected_paused:
-          "Spotify loaded the selected song but paused. Press Play in Spotify to hear it.",
-        other_track:
-          "Spotify is playing a different song. The selected song was not confirmed.",
-        idle: "Spotify reports no local playback. Open Spotify on this Mac and try again.",
-        unavailable:
-          "Spotify on this Mac is unavailable. Open the Spotify app and try again.",
-      };
-      if (result.accepted) {
-        clearConnectAfterMacProbe();
-        try {
-          await reloadRotationAfterMacProbe();
-        } catch (error) {
-          setMacProbeMessage(
-            `Local test completed, but Rotation could not refresh: ${describeError(error)} Reload the page before normal playback.`,
-          );
-          return;
-        }
-      }
-      setMacProbeMessage(
-        result.accepted
-          ? `${messages[result.state]} Choose a device above and press Play to start normal Rotation playback.`
-          : "Spotify on this Mac did not accept the playback test. Open Spotify and try again.",
-      );
-    } catch (error) {
-      if (
-        (error as Error).name === "TimeoutError" ||
-        (error as Error).name === "AbortError"
-      ) {
-        clearConnectAfterMacProbe();
-        try {
-          await reloadRotationAfterMacProbe();
-          setMacProbeMessage(
-            "The local Mac test timed out, so playback may have changed. Choose a device and press Play to restart normal Rotation playback.",
-          );
-        } catch (refreshError) {
-          setMacProbeMessage(
-            `The local Mac test timed out and Rotation could not refresh: ${describeError(refreshError)} Reload the page before normal playback.`,
-          );
-        }
-      } else setMacProbeMessage(describeError(error));
-    } finally {
-      command.current = false;
-      setBusy(false);
-      setMacProbeBusy(false);
-    }
   }
   async function pauseAtEnd(removedUri?: string) {
     if (
@@ -654,6 +791,8 @@ export default function App() {
     );
   }
   async function seekTo(nextPosition: number) {
+    if (playbackCoolingDown)
+      throw new Error(`Spotify is cooling down. Try again in ${cooldownRemaining} seconds.`);
     if (!deviceIdRef.current) throw new Error("Choose a Spotify device first.");
     await api("/api/playback/seek", {
       method: "PUT",
@@ -669,6 +808,12 @@ export default function App() {
     void pollRef.current();
   }
   async function navigate(direction: "next" | "previous", automatic = false) {
+    if (checkOpenRef.current || requiresRotationPlayRef.current) return;
+    if (playbackCoolingDown) {
+      if (!automatic)
+        setPlayerMessage(`Spotify is cooling down. Try again in ${cooldownRemaining} seconds.`);
+      return;
+    }
     if (!navigationAvailable(pendingUriRef.current, command.current)) {
       if (!automatic && pendingUriRef.current)
         setPlayerMessage(
@@ -726,7 +871,22 @@ export default function App() {
       );
       if (item) {
         queuedThroughRef.current = updated.queuedWindow?.endIndex ?? -1;
-        markPending(item);
+        if (updated.playbackConfirmed) {
+          pendingUriRef.current = "";
+          unconfirmedUriRef.current = "";
+          setPendingUri("");
+          setPlayback({
+            deviceId: deviceIdRef.current,
+            uri: item.uri,
+            positionMs: 0,
+            durationMs: item.durationMs ?? 0,
+            isPlaying: true,
+          });
+          setPosition(0);
+          positionRef.current = 0;
+          setIntent(true);
+          setPlayerMessage(`Playing on ${selectedDevice?.name || "Spotify device"}.`);
+        } else markPending(item);
       } else {
         setIntent(false);
         setPlayback(null);
@@ -849,12 +1009,15 @@ export default function App() {
   }
   async function refreshPlaybackOnce() {
     if (
+      checkOpenRef.current ||
+      requiresRotationPlayRef.current ||
       !deviceIdRef.current ||
       command.current ||
       Date.now() < nextPollAllowedRef.current
     )
       return;
     const requestedDeviceId = deviceIdRef.current;
+    const requestedEpoch = playbackEpochRef.current;
     let remote: ConnectPlayback;
     const observationGap = lastObservedAtRef.current
       ? Date.now() - lastObservedAtRef.current
@@ -863,30 +1026,42 @@ export default function App() {
       remote = await api<ConnectPlayback>("/api/playback/state", {
         signal: AbortSignal.timeout(10_000),
       });
-      // A local Mac probe or a device change can begin while this GET waits.
-      // Ignore its stale result before it can restore the old Connect queue.
+      // A command or device change can begin while this GET waits. Ignore its
+      // stale result before it can restore the old playback state.
       if (
+        checkOpenRef.current ||
+        requiresRotationPlayRef.current ||
         !playbackObservationStillRelevant(
           requestedDeviceId,
           deviceIdRef.current,
           command.current,
+          requestedEpoch,
+          playbackEpochRef.current,
         )
       )
         return;
       lastObservedAtRef.current = Date.now();
     } catch (error) {
       if (
+        checkOpenRef.current ||
+        requiresRotationPlayRef.current ||
         !playbackObservationStillRelevant(
           requestedDeviceId,
           deviceIdRef.current,
           command.current,
+          requestedEpoch,
+          playbackEpochRef.current,
         )
       )
         return;
       const apiError = error as ApiError;
-      if (apiError.status === 429)
+      if (apiError.status === 429) {
         nextPollAllowedRef.current =
           Date.now() + (apiError.retryAfter ?? 10) * 1_000;
+        setCooldownUntil(nextPollAllowedRef.current);
+        setCooldownNow(Date.now());
+        void loadPlaybackLogs().catch(() => {});
+      }
       if (!expirePendingIfOverdue())
         setPlayerMessage(
           pendingUriRef.current
@@ -1100,36 +1275,6 @@ export default function App() {
       );
       if (queuedThroughRef.current < index && queuedThroughIndex >= index)
         queuedThroughRef.current = queuedThroughIndex;
-      if (
-        nextItem &&
-        queuedThroughRef.current >= index &&
-        queuedThroughRef.current < active!.order.length - 1 &&
-        index >= Math.max(0, queuedThroughRef.current - 2) &&
-        !refreshingQueueRef.current
-      ) {
-        refreshingQueueRef.current = true;
-        try {
-          const result = await api<{ queuedThroughIndex: number }>(
-            "/api/playback",
-            {
-              method: "PUT",
-              signal: playbackTimeout(),
-              body: JSON.stringify({
-                deviceId: deviceIdRef.current,
-                uri: currentItem.uri,
-                positionMs: remote.positionMs,
-              }),
-            },
-          );
-          queuedThroughRef.current = result.queuedThroughIndex;
-        } catch (error) {
-          setPlayerMessage(
-            `Could not refresh the upcoming queue: ${describeError(error)}`,
-          );
-        } finally {
-          refreshingQueueRef.current = false;
-        }
-      }
     } else if (transition === "current-paused") {
       setPlayback(remote);
       setPosition(remote.positionMs);
@@ -1209,7 +1354,7 @@ export default function App() {
     }
   }
   async function refreshPlayback() {
-    if (pollingRef.current) return;
+    if (pollingRef.current || checkOpenRef.current || requiresRotationPlayRef.current) return;
     pollingRef.current = true;
     try {
       await refreshPlaybackOnce();
@@ -1281,7 +1426,21 @@ export default function App() {
     if (!session?.authenticated || page !== "player") return;
     const poll = (waking = false) => {
       expirePendingIfOverdue();
-      if (document.visibilityState !== "visible") return;
+      if (
+        checkOpenRef.current ||
+        requiresRotationPlayRef.current ||
+        document.visibilityState !== "visible" ||
+        command.current ||
+        pollingRef.current ||
+        playbackCoolingDown ||
+        Date.now() < nextPollAllowedRef.current
+      ) return;
+      if (pendingUriRef.current) {
+        if (!waking && Date.now() < pendingNextPollAtRef.current) return;
+        const delay = pendingPollDelay(pendingPollAttemptRef.current);
+        pendingPollAttemptRef.current += 1;
+        pendingNextPollAtRef.current = Date.now() + delay;
+      }
       const gap = lastObservedAtRef.current
         ? Date.now() - lastObservedAtRef.current
         : 0;
@@ -1300,7 +1459,7 @@ export default function App() {
     poll();
     const interval = window.setInterval(
       () => poll(),
-      !deviceId ? 30_000 : pendingUri ? 3_000 : playingIntent ? 5_000 : 15_000,
+      !deviceId ? 30_000 : pendingUri ? 1_000 : playingIntent ? 5_000 : 15_000,
     );
     const onWake = () => poll(true);
     document.addEventListener("visibilitychange", onWake);
@@ -1312,7 +1471,7 @@ export default function App() {
       window.removeEventListener("focus", onWake);
       window.removeEventListener("pageshow", onWake);
     };
-  }, [session?.authenticated, deviceId, page, playingIntent, pendingUri, loadDevices]);
+  }, [session?.authenticated, deviceId, page, playingIntent, pendingUri, playbackCoolingDown, checkOpen, requiresRotationPlay, loadDevices]);
   return (
     <div className="app">
       <header className="header wrap">
@@ -1577,7 +1736,26 @@ export default function App() {
                     >
                       {devicesLoading ? "Refreshing…" : "Refresh devices"}
                     </button>
+                    {canPlay && activeDeviceId !== deviceId && (
+                      <button
+                        className="secondary-button"
+                        onClick={() => void activateDevice()}
+                        disabled={busy || playbackCoolingDown}
+                      >
+                        Activate device
+                      </button>
+                    )}
                   </div>
+                  {canPlay && (
+                    <p className="device-help" role="status">
+                      {activeDeviceId === deviceId
+                        ? `${selectedDevice?.name} is active. Play starts the selected Rotation song; Resume continues it only when Spotify reports that song paused.`
+                        : activation?.deviceId === deviceId &&
+                            activation.status === "accepted"
+                          ? `Spotify accepted activation for ${selectedDevice?.name}, but it has not confirmed the device is active. Refresh devices to check. You can still press Play to try.`
+                          : `${selectedDevice?.name} is available but not active. Activate device transfers Spotify’s existing playback to this output; Play starts the selected Rotation song.`}
+                    </p>
+                  )}
                   {deviceError && (
                     <p className="inline-error" role="alert">
                       {deviceError}{" "}
@@ -1598,36 +1776,119 @@ export default function App() {
                       Select an available device to enable playback controls.
                     </p>
                   )}
-                  {session.macLocalProbeAvailable && current && (
-                    <div className="mac-probe-callout">
-                      <div>
-                        <h2>Test Spotify on this Mac</h2>
-                        <p>
-                          Plays only the selected song in the Mac desktop app.
-                          The Play control below uses Spotify Connect for the
-                          full shuffled queue.
-                        </p>
-                      </div>
-                      <button
-                        className="secondary-button"
-                        onClick={() => void probeMacPlayback()}
-                        disabled={busy || !!pendingUri}
-                      >
-                        {macProbeBusy
-                          ? "Testing local Mac playback…"
-                          : "Try local Mac playback"}
-                      </button>
-                      {macProbeMessage && (
-                        <p
-                          className="mac-probe-result"
-                          role="status"
-                          aria-live="polite"
-                        >
-                          {macProbeMessage}
-                        </p>
-                      )}
-                    </div>
+                  {devices.some((device) => !device.id) && (
+                    <p className="device-help">
+                      Spotify did not provide a control ID for an unavailable
+                      device. Reopen Spotify on it, then refresh devices.
+                    </p>
                   )}
+                  <div className="playback-check">
+                    <button
+                      className="secondary-button playback-check-toggle"
+                      type="button"
+                      aria-expanded={checkOpen}
+                      aria-controls="playback-check-controls"
+                      onClick={togglePlaybackCheck}
+                      disabled={busy}
+                    >
+                      {checkOpen ? "Close playback check" : "Playback check"}
+                    </button>
+                    {checkOpen && (
+                      <div id="playback-check-controls" className="playback-check-body">
+                        <p>
+                          Direct Spotify controls for comparing this output. These
+                          commands use Spotify’s queue and do not edit Rotation’s
+                          playlist or shuffled order. They can replace the current
+                          queue; close this panel and press Play to restore it.
+                          Rotation does not check playback automatically while
+                          this panel is open.
+                        </p>
+                        <p>
+                          Play playlist context starts at the selected song in
+                          the source playlist. Play Rotation tracks sends the
+                          next songs in Rotation order. Next and Previous below
+                          use Spotify’s queue and leave Rotation’s selected song
+                          unchanged.
+                        </p>
+                        <div className="playback-check-actions">
+                          {([
+                            ["play-context", "Play playlist context"],
+                            ["play-tracks", "Play Rotation tracks"],
+                            ["resume", "Resume in Spotify"],
+                            ["pause", "Pause in Spotify"],
+                            ["next", "Next in Spotify"],
+                            ["previous", "Previous in Spotify"],
+                          ] as const).map(([action, label]) => (
+                            <button
+                              key={action}
+                              className="secondary-button"
+                              type="button"
+                              onClick={() => void sendPlaybackCheck(action)}
+                              disabled={busy || !canPlay || !current || playbackCoolingDown}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                          <button
+                            className="secondary-button"
+                            type="button"
+                            onClick={() => void readPlaybackCheck()}
+                            disabled={busy || !canPlay || !current}
+                          >
+                            Read state
+                          </button>
+                        </div>
+                        {checkPending && (
+                          <p role="status">
+                            {checkPending === "command"
+                              ? "Sending one direct Spotify command…"
+                              : "Reading Spotify playback state…"}
+                          </p>
+                        )}
+                        {!canPlay && <p>Choose an available playback device above to run this check.</p>}
+                        {canPlay && !current && <p>Load a Rotation track before running this check.</p>}
+                        {checkError && <p className="inline-error" role="alert">{checkError}</p>}
+                        {checkResult && (
+                          <div className="playback-check-result" role="status" aria-live="polite">
+                            <p>{checkResult.text}</p>
+                            {checkResult.state && (
+                              <p>
+                                Selected device active: {checkResult.state.selectedDeviceActive ? "yes" : "no"} ·
+                                Shuffle: {checkResult.state.shuffleOn === null ? "unknown" : checkResult.state.shuffleOn ? "on" : "off"} ·
+                                Repeat: {checkResult.state.repeatOn === null ? "unknown" : checkResult.state.repeatOn ? "on" : "off"} ·
+                                Item playable: {checkResult.state.itemPlayable === null ? "unknown" : checkResult.state.itemPlayable ? "yes" : "no"} ·
+                                Item restricted: {checkResult.state.itemRestricted === null ? "unknown" : checkResult.state.itemRestricted ? "yes" : "no"}
+                              </p>
+                            )}
+                            <small>{checkResult.state ? "Read" : "Sent"} {new Date(checkResult.checkedAt).toLocaleTimeString()}</small>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  <div className="playback-diagnostics">
+                    <div>
+                      <strong>
+                        {playbackCoolingDown
+                          ? `Spotify is cooling down · ${cooldownRemaining}s`
+                          : playbackLogs
+                            ? "No playback cooldown"
+                            : "Playback status unavailable"}
+                      </strong>
+                      <p>
+                        Build {playbackBuildId || "unknown"}. Diagnostics include
+                        request timing and status, without tracks, devices, or
+                        tokens.
+                      </p>
+                    </div>
+                    <button
+                      className="secondary-button"
+                      onClick={() => void copyPlaybackDiagnostics()}
+                      disabled={diagnosticsBusy}
+                    >
+                      {diagnosticsBusy ? "Copying…" : "Copy playback diagnostics"}
+                    </button>
+                  </div>
                 </div>
                 {!session.settings?.sourceId ? (
                   <div className="empty-state">
@@ -1734,7 +1995,7 @@ export default function App() {
                           <button
                             aria-label="Previous track"
                             onClick={() => void navigate("previous")}
-                            disabled={!canPlay || !navigationAvailable(pendingUri, busy)}
+                            disabled={!canPlay || checkOpen || requiresRotationPlay || playbackCoolingDown || !navigationAvailable(pendingUri, busy)}
                           >
                             ↶
                           </button>
@@ -1742,14 +2003,14 @@ export default function App() {
                             className="play-button"
                             aria-label={playingIntent ? "Pause" : "Play"}
                             onClick={() => void togglePlayback()}
-                            disabled={busy || !canPlay || !!pendingUri}
+                            disabled={busy || checkOpen || !canPlay || playbackCoolingDown || !!pendingUri}
                           >
                             {playingIntent ? "Ⅱ" : "▶"}
                           </button>
                           <button
                             aria-label="Next track"
                             onClick={() => void navigate("next")}
-                            disabled={!canPlay || !navigationAvailable(pendingUri, busy)}
+                            disabled={!canPlay || checkOpen || requiresRotationPlay || playbackCoolingDown || !navigationAvailable(pendingUri, busy)}
                           >
                             ↷
                           </button>
@@ -1777,9 +2038,12 @@ export default function App() {
                             }}
                             disabled={
                               !canPlay ||
+                              checkOpen ||
+                              requiresRotationPlay ||
                               !duration ||
                               playback?.uri !== current.uri ||
                               !!pendingUri ||
+                              playbackCoolingDown ||
                               busy
                             }
                             aria-label="Seek within track"
@@ -1799,16 +2063,22 @@ export default function App() {
                           role="status"
                           aria-live="polite"
                         >
-                          {playerMessage ||
+                          {playbackCoolingDown
+                            ? `Spotify is cooling down. Controls return in about ${cooldownRemaining} seconds.`
+                            : checkOpen
+                              ? "Playback check is open. Close it to return to Rotation controls."
+                              : requiresRotationPlay
+                                ? "Playback check may have changed Spotify’s queue. Press Play to restore Rotation before skipping or seeking."
+                            : playerMessage ||
                             (canPlay
-                              ? `Ready on ${selectedDevice?.name}. Press Play to listen.`
+                              ? `Ready on ${selectedDevice?.name}. Press Play to start the selected song.`
                               : "Choose a Spotify device to listen.")}
                         </div>
-                        {canPlay && !playingIntent && !pendingUri && (
+                        {canPlay && !checkOpen && !playingIntent && !pendingUri && (
                           <button
                             className="secondary-button start-button"
                             onClick={() => void start()}
-                            disabled={busy}
+                            disabled={busy || playbackCoolingDown}
                           >
                             Play on {selectedDevice?.name}
                           </button>
@@ -1817,7 +2087,7 @@ export default function App() {
                           <button
                             className="remove-button"
                             onClick={askRemove}
-                            disabled={busy || !!failure || duplicate}
+                            disabled={busy || checkOpen || requiresRotationPlay || !!failure || duplicate}
                             aria-label={`Remove and skip ${current.name}${hasArchive ? ", sending it to history" : ", without archiving"}`}
                           >
                             <span aria-hidden="true">×</span> Remove and skip
@@ -1861,7 +2131,7 @@ export default function App() {
                               <button
                                 className="primary-button"
                                 onClick={() => void retry()}
-                                disabled={busy}
+                                disabled={busy || checkOpen || requiresRotationPlay}
                               >
                                 Retry removal
                               </button>
@@ -1873,7 +2143,7 @@ export default function App() {
                                 setFailure(null);
                                 void remove(true);
                               }}
-                              disabled={busy}
+                              disabled={busy || checkOpen || requiresRotationPlay}
                             >
                               Remove without archiving
                             </button>
@@ -1885,6 +2155,7 @@ export default function App() {
                                 setFailure(null);
                                 void loadRotation();
                               }}
+                              disabled={busy || checkOpen}
                             >
                               Refresh playlist
                             </button>

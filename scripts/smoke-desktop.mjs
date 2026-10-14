@@ -19,6 +19,10 @@ if (!(await stat(runtime).catch(() => null))?.isFile()) {
   console.error("The staged bundle is missing its Node runtime.");
   process.exit(2);
 }
+if (!(await stat(join(appRoot, "scripts", "spotify-player-isolate.mjs")).catch(() => null))?.isFile()) {
+  console.error("The staged bundle is missing its optional Spotify diagnostic helper.");
+  process.exit(2);
+}
 const launcher = process.platform === "darwin"
   ? join(stagingRoot, "Contents", "MacOS", "Rotation")
   : join(appRoot, process.platform === "win32" ? "Launch Rotation.cmd" : "Launch Rotation.sh");

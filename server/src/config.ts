@@ -11,10 +11,6 @@ export const dataDir = resolve(env.DATA_DIR || "./data");
 export const port = Number(env.PORT || 3000);
 export const host = env.HOST || "0.0.0.0";
 export const desktopMode = env.DESKTOP_MODE === "1";
-export const macLocalProbeAvailable =
-  desktopMode &&
-  process.platform === "darwin" &&
-  env.MAC_LOCAL_SPOTIFY_PROBE === "1";
 export const desktopBuildId = /^[a-f0-9]{32}$/.test(env.ROTATION_BUILD_ID || "")
   ? env.ROTATION_BUILD_ID
   : null;
@@ -37,4 +33,5 @@ export const scopes = [
   "playlist-modify-public",
   "user-modify-playback-state",
   "user-read-playback-state",
+  "user-read-currently-playing",
 ].join(" ");

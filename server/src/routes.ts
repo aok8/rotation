@@ -5,7 +5,6 @@ import {
   desktopControlToken,
   desktopBuildId,
   desktopMode,
-  macLocalProbeAvailable,
   uriPattern,
 } from "./config.js";
 import { AppError, requireSession, requireCsrf, id, object } from "./errors.js";
@@ -13,15 +12,19 @@ import { sessionFrom, save } from "./store.js";
 import { allPlaylists, selected, loadItems, spotify } from "./spotify.js";
 import {
   deviceId,
-  deviceParameter,
   devices,
   playbackDiagnostic,
   playbackState,
   requireCurrentPlayback,
   requireDevice,
+  requirePlaybackRead,
   playWindow,
-  playbackCommand,
+  skipWithinWindow,
+  transferDevice,
 } from "./playback.js";
+import { buildPlayerRequest, pause as playerPause, resume as playerResume,
+  seek as playerSeek, sendPlayerCommand, summarizePlayer } from "./spotify-player.js";
+import { playerLogs, runPlayerOperation } from "./player-ops.js";
 import {
   current,
   rotation,
@@ -31,7 +34,6 @@ import {
   removeCore,
 } from "./rotation.js";
 import type { Operation } from "./types.js";
-import { probeMacRotationTrack } from "./mac-local.js";
 
 let busy = false;
 async function withPlaybackLock<T>(task: () => Promise<T>): Promise<T> {
@@ -59,7 +61,6 @@ export function registerApiRoutes(app: FastifyInstance) {
           csrfToken: s.csrf,
           ...(desktopMode ? { desktop: true } : {}),
           ...(desktopMode && desktopBuildId ? { desktopBuildId } : {}),
-          ...(macLocalProbeAvailable ? { macLocalProbeAvailable: true } : {}),
         }
       : desktopMode
         ? {
@@ -153,10 +154,11 @@ export function registerApiRoutes(app: FastifyInstance) {
   app.post("/api/rotation/navigate", async (req) => {
     const s = requireSession(req);
     requireCsrf(req, s);
-    return withPlaybackLock(async () => {
+    return withPlaybackLock(() => runPlayerOperation(s, async () => {
       const b = object(req.body);
       const r = rotation(s);
       const startingIndex = r.currentIndex;
+      let playbackConfirmed = false;
       let nextIndex: number;
       if (b.direction === "next")
         nextIndex = Math.min(r.currentIndex + 1, r.order.length);
@@ -166,7 +168,27 @@ export function registerApiRoutes(app: FastifyInstance) {
       if (b.deviceId !== undefined) {
         const selectedDevice = deviceId(b.deviceId);
         if (nextIndex < r.order.length) {
-          await playWindow(s, r, nextIndex, selectedDevice);
+          if (b.direction === "next" && r.queuedWindow?.deviceId === selectedDevice &&
+              nextIndex <= r.queuedWindow.endIndex) {
+            try {
+              await skipWithinWindow(s, r, nextIndex, selectedDevice);
+              playbackConfirmed = true;
+            } catch (error) {
+              if (!(error instanceof AppError) ||
+                  (error.code !== "sync_ambiguous" && error.code !== "playback_mode"))
+                throw error;
+              // Native Next is unsafe with duplicate URIs or changed playback
+              // modes. Start the selected occurrence explicitly after Play has
+              // normalized known Shuffle and Repeat settings.
+              await playWindow(s, r, nextIndex, selectedDevice);
+            }
+          } else if (b.direction === "previous" ||
+                     (b.direction === "next" && r.queuedWindow?.deviceId === selectedDevice &&
+                      nextIndex > r.queuedWindow.endIndex)) {
+            await playWindow(s, r, nextIndex, selectedDevice);
+          } else {
+            throw new AppError("sync_unavailable", "Press Play to restore the Spotify queue.", 409);
+          }
         } else {
           await requireDevice(s, selectedDevice);
           const state = await playbackState(s);
@@ -175,10 +197,7 @@ export function registerApiRoutes(app: FastifyInstance) {
             state.deviceId === selectedDevice &&
             state.uri === previousItem?.uri
           )
-            await playbackCommand(
-              s,
-              `/me/player/pause${deviceParameter(selectedDevice)}`,
-            );
+            await sendPlayerCommand(s, playerPause(selectedDevice));
           else if (state.uri || state.isPlaying)
             throw new AppError(
               "playback_mismatch",
@@ -196,8 +215,8 @@ export function registerApiRoutes(app: FastifyInstance) {
       r.currentIndex = nextIndex;
       if (nextIndex >= r.order.length) r.queuedWindow = undefined;
       save();
-      return r;
-    });
+      return playbackConfirmed ? { ...r, playbackConfirmed: true } : r;
+    }));
   });
   app.post("/api/rotation/sync", async (req) => {
     const s = requireSession(req);
@@ -412,41 +431,71 @@ export function registerApiRoutes(app: FastifyInstance) {
     reply.header("Cache-Control", "no-store");
     return playbackDiagnostic(requireSession(req));
   });
-  app.post("/api/playback/mac-probe", async (req) => {
+  app.get("/api/playback/logs", async (req, reply) => {
+    reply.header("Cache-Control", "no-store");
+    return playerLogs(requireSession(req));
+  });
+  app.get("/api/playback/check", async (req, reply) => {
+    reply.header("Cache-Control", "no-store");
+    const s = requireSession(req);
+    requirePlaybackRead(s);
+    const q = object(req.query);
+    const selectedDevice = deviceId(q.deviceId);
+    if (selectedDevice === "active")
+      throw new AppError("invalid_playback", "Choose a player with a device ID.");
+    const item = current(rotation(s));
+    if (!item) throw new AppError("item_changed", "Choose a Rotation track.", 409);
+    return summarizePlayer(await spotify(s, "/me/player"), selectedDevice, item.uri);
+  });
+  app.post("/api/playback/check", async (req) => {
     const s = requireSession(req);
     requireCsrf(req, s);
-    if (!macLocalProbeAvailable)
-      throw new AppError(
-        "mac_local_unavailable",
-        "This playback test is available only in the packaged Mac app.",
-        404,
-      );
-    if (busy)
-      throw new AppError(
-        "operation_in_progress",
-        "A playlist change is already in progress.",
-        409,
-      );
-    const b = object(req.body);
-    const r = rotation(s);
-    const item = current(r);
-    if (!item || b.itemKey !== item.key)
-      throw new AppError(
-        "item_changed",
-        "The selected song changed. Refresh the player.",
-        409,
-      );
-    busy = true;
-    try {
-      return await probeMacRotationTrack(r, item.uri);
-    } finally {
-      busy = false;
-    }
+    return withPlaybackLock(() => runPlayerOperation(s, async () => {
+      const b = object(req.body);
+      const selectedDevice = deviceId(b.deviceId);
+      if (selectedDevice === "active")
+        throw new AppError("invalid_playback", "Choose a player with a device ID.");
+      const action = b.action;
+      if (action !== "play-context" && action !== "play-tracks" &&
+          action !== "resume" && action !== "pause" && action !== "next" && action !== "previous")
+        throw new AppError("invalid_playback", "Choose one Player check action.");
+      const r = rotation(s);
+      const item = current(r);
+      if (!item) throw new AppError("item_changed", "Choose a Rotation track.", 409);
+      const byKey = new Map(r.items.map((entry) => [entry.key, entry]));
+      const uris = action === "play-tracks"
+        ? r.order.slice(r.currentIndex, r.currentIndex + 20).map((key) => byKey.get(key)?.uri)
+        : undefined;
+      if (uris?.some((uri) => !uri))
+        throw new AppError("item_changed", "Refresh the Rotation playlist.", 409);
+      const command = buildPlayerRequest(action, {
+        deviceId: selectedDevice,
+        sourceId: r.source.id,
+        currentUri: item.uri,
+        uris: uris as string[] | undefined,
+      });
+      // Clear the saved queue before sending: a timeout can mean Spotify
+      // accepted the command even though the response never reached us.
+      if (s.rotation === r) {
+        r.queuedWindow = undefined;
+        save();
+      }
+      await sendPlayerCommand(s, command, false);
+      return { accepted: true, requestKind: command.kind };
+    }));
+  });
+  app.put("/api/playback/transfer", async (req) => {
+    const s = requireSession(req);
+    requireCsrf(req, s);
+    return withPlaybackLock(() => runPlayerOperation(s, async () => {
+      const b = object(req.body);
+      return transferDevice(s, deviceId(b.deviceId));
+    }));
   });
   app.put("/api/playback/seek", async (req) => {
     const s = requireSession(req);
     requireCsrf(req, s);
-    return withPlaybackLock(async () => {
+    return withPlaybackLock(() => runPlayerOperation(s, async () => {
       const b = object(req.body);
       const selectedDevice = deviceId(b.deviceId);
       const r = rotation(s);
@@ -463,17 +512,14 @@ export function registerApiRoutes(app: FastifyInstance) {
         );
       await requireDevice(s, selectedDevice);
       await requireCurrentPlayback(s, selectedDevice, item.uri);
-      await playbackCommand(
-        s,
-        `/me/player/seek?position_ms=${b.positionMs}${deviceParameter(selectedDevice, "&")}`,
-      );
+      await sendPlayerCommand(s, playerSeek(selectedDevice, b.positionMs as number));
       return { ok: true };
-    });
+    }));
   });
   app.put("/api/playback/control", async (req) => {
     const s = requireSession(req);
     requireCsrf(req, s);
-    return withPlaybackLock(async () => {
+    return withPlaybackLock(() => runPlayerOperation(s, async () => {
       const b = object(req.body);
       const selectedDevice = deviceId(b.deviceId);
       if (b.action !== "pause" && b.action !== "resume")
@@ -510,18 +556,15 @@ export function registerApiRoutes(app: FastifyInstance) {
         throw new AppError("item_changed", "Choose a Rotation track.", 409);
       await requireDevice(s, selectedDevice);
       await requireCurrentPlayback(s, selectedDevice, expectedUri);
-      const command = b.action === "pause" ? "pause" : "play";
-      await playbackCommand(
-        s,
-        `/me/player/${command}${deviceParameter(selectedDevice)}`,
-      );
+      await sendPlayerCommand(s, b.action === "pause"
+        ? playerPause(selectedDevice) : playerResume(selectedDevice));
       return { ok: true };
-    });
+    }));
   });
   app.put("/api/playback", async (req) => {
     const s = requireSession(req);
     requireCsrf(req, s);
-    return withPlaybackLock(async () => {
+    return withPlaybackLock(() => runPlayerOperation(s, async () => {
       const b = object(req.body);
       const r = rotation(s);
       const item = current(r);
@@ -548,6 +591,6 @@ export function registerApiRoutes(app: FastifyInstance) {
         selectedDevice,
         b.positionMs as number | undefined,
       );
-    });
+    }));
   });
 }
